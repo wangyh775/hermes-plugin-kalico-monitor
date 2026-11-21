@@ -4,7 +4,6 @@ import json
 import urllib.parse
 import urllib.request
 
-
 OBJECTS = {"print_stats": None, "webhooks": None, "extruder": None, "heater_bed": None}
 
 
