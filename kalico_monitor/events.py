@@ -63,7 +63,12 @@ class EventProcessor:
 
     def evaluate(self, now: float) -> tuple[dict, list[Alert]]:
         sample = sample_from_status(self.status)
+        old_generation = self.previous.get("generation", 0) if self.previous else 0
         current, events = compare(self.previous, sample, now, self.stall_minutes)
+        # Error messages are job-specific: a new print must not inherit G-code
+        # errors from the preceding task.
+        if current["generation"] > old_generation:
+            self.recent_errors.clear()
         self.previous = current
         return current, self._alerts(events, sample)
 

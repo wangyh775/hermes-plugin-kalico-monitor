@@ -1,5 +1,5 @@
-from kalico_monitor.watch import compare, sample_from_status
 from kalico_monitor.events import EventProcessor
+from kalico_monitor.watch import compare, sample_from_status
 
 
 def status(pstate="standby", kstate="ready", filename="sample.gcode", message=""):

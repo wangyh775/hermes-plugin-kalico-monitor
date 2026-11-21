@@ -2,8 +2,8 @@
 import asyncio
 
 import aiohttp
-from aiohttp import web
 import pytest
+from aiohttp import web
 
 from kalico_monitor.config import Settings
 from kalico_monitor.monitor import Monitor

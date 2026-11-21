@@ -18,8 +18,9 @@ def test_generic_v2_signature_and_stable_delivery_id():
 
 
 async def _fake_delivery_success():
-    from aiohttp import web
     import aiohttp
+    from aiohttp import web
+
     from kalico_monitor.notifier import deliver
     received = {}
 

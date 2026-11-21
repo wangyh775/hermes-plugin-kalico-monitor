@@ -21,7 +21,7 @@ LOG = logging.getLogger("kalico-monitor")
 SUBSCRIBE = {"jsonrpc": "2.0", "method": "printer.objects.subscribe",
              "params": {"objects": {"print_stats": None, "webhooks": None, "virtual_sdcard": None}}, "id": 1}
 QUERY = {"jsonrpc": "2.0", "method": "printer.objects.query",
-         "params": {"objects": {"print_stats": None, "webhooks": None, "virtual_sdcard": None}}, "id": 2}
+         "params": {"objects": {"webhooks": None}}, "id": 2}
 
 
 class Monitor:
@@ -157,13 +157,41 @@ class Monitor:
                     continue
                 if not isinstance(packet, dict):
                     continue
-                if packet.get("id") in (1, 2):
+                reply_id = packet.get("id")
+                if reply_id == 1:
+                    # A subscription reply is the complete initial snapshot.
                     if "error" in packet:
-                        raise RuntimeError("Moonraker subscription/query rejected")
+                        raise RuntimeError("Moonraker subscription rejected")
                     result = packet.get("result", {})
                     snapshot = result.get("status") if isinstance(result, dict) else None
-                    if isinstance(snapshot, dict):
-                        self._process_snapshot(processor, snapshot)
+                    if not isinstance(snapshot, dict):
+                        raise RuntimeError("Moonraker subscription returned no status")
+                    self._process_snapshot(processor, snapshot)
+                    continue
+                if reply_id == 2:
+                    # A Klippy failure may reject object queries while Moonraker
+                    # itself remains reachable. Keep the WebSocket connected.
+                    if "error" in packet:
+                        LOG.warning("Moonraker webhooks query rejected; keeping connection")
+                        continue
+                    result = packet.get("result", {})
+                    snapshot = result.get("status") if isinstance(result, dict) else None
+                    if isinstance(snapshot, dict) and isinstance(snapshot.get("webhooks"), dict):
+                        update = {"webhooks": snapshot["webhooks"]}
+                        if processor.has_snapshot:
+                            current, alerts = processor.apply_update(update, time.time())
+                        else:
+                            current, alerts = processor.set_snapshot(update, time.time())
+                        self._save(current, alerts)
+                        hooks_state = snapshot["webhooks"].get("state")
+                        if hooks_state in {"shutdown", "error"}:
+                            self.shutdown_query_since = None
+                            self.klippy_down_since = None
+                        elif hooks_state == "ready":
+                            self.shutdown_query_since = None
+                            self._klippy_recovered()
+                        elif hooks_state in {"disconnected", "startup"}:
+                            self._klippy_disconnected()
                     continue
 
                 method = packet.get("method")

@@ -39,6 +39,7 @@ async def deliver(session: aiohttp.ClientSession, url: str, secret: str,
                             timeout=aiohttp.ClientTimeout(total=15)) as response:
         response.raise_for_status()
         result = await response.json()
-    if result.get("status") not in {"delivered", "duplicate"}:
-        raise ValueError(f"Webhook did not confirm delivery: {result.get('status')}")
+    if not isinstance(result, dict) or result.get("status") not in {"delivered", "duplicate"}:
+        status = result.get("status") if isinstance(result, dict) else type(result).__name__
+        raise ValueError(f"Webhook did not confirm delivery: {status}")
     return result
