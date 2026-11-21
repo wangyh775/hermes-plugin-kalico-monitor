@@ -1,0 +1,239 @@
+"""Persistent Moonraker WebSocket listener and Hermes delivery worker.
+
+No G-code or motion control is issued. Printer status and diagnostic queries only.
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import logging
+import time
+
+import aiohttp
+
+from .config import Settings
+from .events import Alert, EventProcessor
+from .notifier import deliver
+from .storage import Outbox
+
+LOG = logging.getLogger("kalico-monitor")
+SUBSCRIBE = {"jsonrpc": "2.0", "method": "printer.objects.subscribe",
+             "params": {"objects": {"print_stats": None, "webhooks": None, "virtual_sdcard": None}}, "id": 1}
+QUERY = {"jsonrpc": "2.0", "method": "printer.objects.query",
+         "params": {"objects": {"print_stats": None, "webhooks": None, "virtual_sdcard": None}}, "id": 2}
+
+
+class Monitor:
+    def __init__(self, settings: Settings, store: Outbox):
+        self.settings = settings
+        self.store = store
+        self.last_store_at = 0.0
+        self.last_stored_state = store.get_state()
+        self.klippy_down_since: float | None = None
+        self.klippy_down_alerted = False
+        self.klippy_down_id = 0
+        self.ws_offline_since: float | None = None
+        self.ws_offline_notified = False
+        self.ws_offline_id = 0
+        self.shutdown_query_since: float | None = None
+
+    def _save(self, current: dict, alerts: list[Alert]):
+        previous = self.last_stored_state
+        important = (previous is None or
+                     any(current.get(k) != previous.get(k) for k in
+                         ("state", "klippy_state", "generation", "filename", "stops")))
+        # Avoid writing an SD/eMMC card every progress notification.
+        if alerts or important or time.monotonic() - self.last_store_at >= 15:
+            self.store.transition(current, alerts)
+            self.last_stored_state = dict(current)
+            self.last_store_at = time.monotonic()
+            for alert in alerts:
+                LOG.warning("queued %s %s", alert.kind, alert.detail)
+
+    def _new_incident(self, key: str) -> int:
+        value = int(self.store.get_meta(key, 0)) + 1
+        self.store.set_meta(key, value)
+        return value
+
+    def _system_alert(self, kind: str, generation: int, detail: str,
+                      severity: str = "critical"):
+        event = Alert(kind=kind, generation=generation, filename="", detail=detail,
+                      severity=severity)
+        self.store.enqueue(event)
+        LOG.warning("queued %s %s", kind, detail)
+
+    async def _dispatch(self, session: aiohttp.ClientSession):
+        while True:
+            for item in self.store.pending(limit=12):
+                try:
+                    await deliver(session, self.settings.hermes_url,
+                                  self.settings.hermes_secret, self.settings.printer, item)
+                except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
+                    self.store.failed(item["id"], type(exc).__name__ + ": " + str(exc)[:100])
+                    LOG.warning("notification retry scheduled: %s", item["id"])
+                else:
+                    self.store.delivered(item["id"])
+                    LOG.info("notification delivered: %s", item["id"])
+            await asyncio.sleep(2)
+
+    def _process_snapshot(self, processor: EventProcessor, snapshot: dict):
+        if self.ws_offline_notified:
+            self._system_alert("moonraker_recovered", self.ws_offline_id,
+                               "Moonraker subscription restored", "info")
+        self.ws_offline_since = None
+        self.ws_offline_notified = False
+        state, alerts = processor.set_snapshot(snapshot, time.time())
+        self._save(state, alerts)
+        hooks = snapshot.get("webhooks", {})
+        if isinstance(hooks, dict) and hooks.get("state") == "ready":
+            self._klippy_recovered()
+        elif isinstance(hooks, dict) and hooks.get("state") in {"disconnected", "startup"}:
+            self._klippy_disconnected()
+        elif isinstance(hooks, dict) and hooks.get("state") in {"shutdown", "error"}:
+            self.klippy_down_since = None
+            self.shutdown_query_since = None
+
+    def _klippy_disconnected(self):
+        if self.klippy_down_since is None:
+            self.klippy_down_since = time.monotonic()
+
+    def _klippy_recovered(self):
+        self.klippy_down_since = None
+        if self.klippy_down_alerted:
+            self._system_alert("klippy_recovered", self.klippy_down_id,
+                               "Moonraker reports Kalico ready again; check before restarting print", "info")
+            self.klippy_down_alerted = False
+
+    def _tick(self, processor: EventProcessor):
+        # Shutdown notification may have no payload. If query never returns,
+        # issue generic shutdown warning rather than suppressing the event.
+        if (self.shutdown_query_since is not None and
+                time.monotonic() - self.shutdown_query_since >= 3):
+            self.shutdown_query_since = None
+            delta = {"webhooks": {"state": "shutdown", "state_message":
+                        "Kalico Shutdown event received; state query did not return details"}}
+            if processor.has_snapshot:
+                current, alerts = processor.apply_update(delta, time.time())
+            else:
+                current, alerts = processor.set_snapshot(delta, time.time())
+            self._save(current, alerts)
+        if processor.has_snapshot:
+            current, alerts = processor.evaluate(time.time())
+            self._save(current, alerts)
+        if (self.klippy_down_since is not None and not self.klippy_down_alerted
+                and time.monotonic() - self.klippy_down_since >= self.settings.disconnect_seconds):
+            self.klippy_down_id = self._new_incident("klippy_incidents")
+            self._system_alert("klippy_disconnected", self.klippy_down_id,
+                               "Moonraker has lost its connection to Kalico")
+            self.klippy_down_alerted = True
+
+    async def _listen(self, session: aiohttp.ClientSession):
+        headers = {"X-Api-Key": self.settings.moonraker_api_key} if self.settings.moonraker_api_key else {}
+        processor = EventProcessor(previous=self.store.get_state(),
+                                   stall_minutes=self.settings.stall_minutes)
+        async with session.ws_connect(self.settings.ws_url, headers=headers,
+                                      heartbeat=20) as ws:
+            LOG.info("Moonraker connected; subscribing to status")
+            await ws.send_json(SUBSCRIBE)
+            requested_at = time.monotonic()
+            while True:
+                if not processor.has_snapshot and time.monotonic() - requested_at > 20:
+                    raise TimeoutError("Moonraker subscription reply timed out")
+                try:
+                    msg = await ws.receive(timeout=5)
+                except asyncio.TimeoutError:
+                    self._tick(processor)
+                    continue
+                if msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR,
+                                aiohttp.WSMsgType.CLOSE):
+                    raise ConnectionError("Moonraker WebSocket closed")
+                if msg.type != aiohttp.WSMsgType.TEXT:
+                    self._tick(processor)
+                    continue
+                try:
+                    packet = json.loads(msg.data)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(packet, dict):
+                    continue
+                if packet.get("id") in (1, 2):
+                    if "error" in packet:
+                        raise RuntimeError("Moonraker subscription/query rejected")
+                    result = packet.get("result", {})
+                    snapshot = result.get("status") if isinstance(result, dict) else None
+                    if isinstance(snapshot, dict):
+                        self._process_snapshot(processor, snapshot)
+                    continue
+
+                method = packet.get("method")
+                if method == "notify_klippy_shutdown":
+                    self.shutdown_query_since = time.monotonic()
+                    await ws.send_json(QUERY)
+                elif method == "notify_klippy_disconnected":
+                    self._klippy_disconnected()
+                    await ws.send_json(QUERY)
+                elif method == "notify_klippy_ready":
+                    self._klippy_recovered()
+                    await ws.send_json(SUBSCRIBE)
+                else:
+                    current, alerts = processor.handle_packet(packet, time.time())
+                    if current is not None:
+                        self._save(current, alerts)
+                        hooks = processor.status.get("webhooks", {})
+                        if hooks.get("state") == "ready":
+                            self._klippy_recovered()
+                        elif hooks.get("state") in {"disconnected", "startup"}:
+                            self._klippy_disconnected()
+                self._tick(processor)
+
+    async def run(self):
+        headers = {"User-Agent": "hermes-plugin-kalico-monitor/0.1"}
+        async with aiohttp.ClientSession(headers=headers, trust_env=False) as session:
+            sender = asyncio.create_task(self._dispatch(session))
+            try:
+                while True:
+                    try:
+                        await self._listen(session)
+                    except asyncio.CancelledError:
+                        raise
+                    except (aiohttp.ClientError, OSError, TimeoutError,
+                            ConnectionError, RuntimeError) as exc:
+                        LOG.warning("Moonraker WebSocket problem: %s", type(exc).__name__)
+                        if self.ws_offline_since is None:
+                            self.ws_offline_since = time.monotonic()
+                        if (not self.ws_offline_notified and
+                                time.monotonic() - self.ws_offline_since >= self.settings.disconnect_seconds):
+                            self.ws_offline_id = self._new_incident("moonraker_incidents")
+                            self._system_alert("moonraker_unreachable", self.ws_offline_id,
+                                               "Moonraker WebSocket is unavailable")
+                            self.ws_offline_notified = True
+                        await asyncio.sleep(3)
+                    else:
+                        await asyncio.sleep(3)
+            finally:
+                sender.cancel()
+                try:
+                    await sender
+                except asyncio.CancelledError:
+                    pass
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Monitor Kalico through Moonraker; notify via Hermes")
+    parser.add_argument("--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING"))
+    args = parser.parse_args()
+    logging.basicConfig(level=getattr(logging, args.log_level),
+                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    settings = Settings.load()
+    store = Outbox(settings.sqlite_path, settings.printer)
+    try:
+        asyncio.run(Monitor(settings, store).run())
+    except KeyboardInterrupt:
+        pass
+    finally:
+        store.close()
+
+
+if __name__ == "__main__":
+    main()

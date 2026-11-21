@@ -1,0 +1,24 @@
+# Merge into ~/.hermes/config.yaml. Do not commit real secrets or chat IDs.
+platforms:
+  webhook:
+    enabled: true
+    extra:
+      host: 127.0.0.1
+      port: 8644
+      routes:
+        kalico-alert:
+          secret: "REPLACE_WITH_THE_SAME_LONG_RANDOM_SECRET"
+          signature: generic
+          deliver: feishu
+          deliver_only: true
+          mirror_to_session: true
+          deliver_extra:
+            chat_id: "REPLACE_WITH_FEISHU_GROUP_CHAT_ID"
+          prompt: |
+            【Kalico 告警】{printer}
+            等级：{severity}
+            类型：{kind}
+            时间：{occurred_at}
+            文件：{filename}
+            信息：{detail}
+            ID：{alert_id}
