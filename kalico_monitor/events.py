@@ -1,0 +1,89 @@
+"""Moonraker JSON-RPC packet parsing and stateful alert classification."""
+from __future__ import annotations
+
+from collections import deque
+from dataclasses import dataclass
+from typing import Any
+
+from .watch import compare, sample_from_status
+
+
+@dataclass(frozen=True)
+class Alert:
+    kind: str
+    generation: int
+    filename: str
+    detail: str
+    severity: str
+
+    @property
+    def id_key(self) -> str:
+        return f"{self.kind}:{self.generation}:{self.filename}"
+
+
+SEVERITY = {
+    "complete": "info", "cancelled": "info", "paused": "warning",
+    "stalled": "warning", "error": "critical", "klippy_shutdown": "critical",
+}
+
+
+class EventProcessor:
+    def __init__(self, previous: dict | None = None, stall_minutes: int = 0):
+        self.previous = previous
+        self.status: dict[str, dict] = {}
+        self.stall_minutes = max(0, stall_minutes)
+        self.recent_errors: deque[str] = deque(maxlen=8)
+        self.has_snapshot = False
+
+    def _alerts(self, events: list[dict], sample: dict) -> list[Alert]:
+        out = []
+        for event in events:
+            detail = event["detail"].strip()
+            if event["kind"] in ("error", "klippy_shutdown") and self.recent_errors:
+                detail += " | Recent G-code: " + " / ".join(list(self.recent_errors)[-3:])
+            out.append(Alert(kind=event["kind"], generation=event["generation"],
+                             filename=sample["filename"], detail=detail[:1500],
+                             severity=SEVERITY[event["kind"]]))
+        return out
+
+    def set_snapshot(self, status: dict, now: float) -> tuple[dict, list[Alert]]:
+        """A subscription reply is a full snapshot; reconcile with persisted state."""
+        self.status = {key: dict(value) for key, value in status.items() if isinstance(value, dict)}
+        self.has_snapshot = True
+        return self.evaluate(now)
+
+    def apply_update(self, update: dict, now: float) -> tuple[dict, list[Alert]]:
+        """Changes are deltas, not complete objects. Merge fields in-place."""
+        if not self.has_snapshot:
+            return self.previous or {}, []
+        for key, delta in update.items():
+            if isinstance(delta, dict):
+                self.status.setdefault(key, {}).update(delta)
+        return self.evaluate(now)
+
+    def evaluate(self, now: float) -> tuple[dict, list[Alert]]:
+        sample = sample_from_status(self.status)
+        current, events = compare(self.previous, sample, now, self.stall_minutes)
+        self.previous = current
+        return current, self._alerts(events, sample)
+
+    def ingest_gcode_response(self, message: Any) -> None:
+        if not isinstance(message, str):
+            return
+        lowered = message.lower()
+        if any(x in lowered for x in ("error", "failed", "shutdown", "bad probe")):
+            self.recent_errors.append(message.strip()[:300])
+
+    def handle_packet(self, packet: dict, now: float) -> tuple[dict | None, list[Alert]]:
+        """Parse notifications. Shutdown event itself is followed by a full query.
+
+        Notify_klippy_shutdown has no payload; callers must query state_message
+        rather than making up a reason. This function only handles status deltas.
+        """
+        method = packet.get("method")
+        params = packet.get("params", [])
+        if method == "notify_gcode_response" and params:
+            self.ingest_gcode_response(params[0])
+        if method == "notify_status_update" and params and isinstance(params[0], dict):
+            return self.apply_update(params[0], now)
+        return None, []
