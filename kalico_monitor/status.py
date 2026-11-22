@@ -1,5 +1,7 @@
 """Read-only Moonraker status query for Hermes conversations."""
 
+from __future__ import annotations
+
 import json
 import urllib.parse
 import urllib.request
@@ -7,12 +9,13 @@ import urllib.request
 OBJECTS = {"print_stats": None, "webhooks": None, "extruder": None, "heater_bed": None, "virtual_sdcard": None}
 
 
-def query_status(url: str, api_key: str = "", timeout: int = 6) -> dict:
+def query_status(url: str, api_key: str = "", timeout: int = 6,
+                 objects: dict | None = None) -> dict:
     url = url.rstrip("/")
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("Moonraker URL must be an HTTP(S) origin")
-    payload = json.dumps({"objects": OBJECTS}).encode("utf-8")
+    payload = json.dumps({"objects": OBJECTS if objects is None else objects}).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["X-Api-Key"] = api_key
@@ -27,3 +30,8 @@ def query_status(url: str, api_key: str = "", timeout: int = 6) -> dict:
     if not isinstance(status, dict):
         raise ValueError("Unexpected Moonraker response")
     return status
+
+
+def query_force_status(url: str, api_key: str = "", timeout: int = 6) -> dict:
+    """Query only the optional PR #13 force monitor without affecting base status."""
+    return query_status(url, api_key, timeout, objects={"nozzle_force_monitor": None})
