@@ -1,17 +1,15 @@
 """Read-only Moonraker status query for Hermes conversations."""
-from __future__ import annotations
 
 import json
+import urllib.parse
 import urllib.request
-from urllib.parse import urlsplit
 
-
-OBJECTS = {"print_stats": None, "webhooks": None, "extruder": None, "heater_bed": None}
+OBJECTS = {"print_stats": None, "webhooks": None, "extruder": None, "heater_bed": None, "virtual_sdcard": None}
 
 
 def query_status(url: str, api_key: str = "", timeout: int = 6) -> dict:
     url = url.rstrip("/")
-    parsed = urlsplit(url)
+    parsed = urllib.parse.urlsplit(url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("Moonraker URL must be an HTTP(S) origin")
     payload = json.dumps({"objects": OBJECTS}).encode("utf-8")

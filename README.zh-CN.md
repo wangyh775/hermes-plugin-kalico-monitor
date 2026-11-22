@@ -86,3 +86,20 @@ pytest -q
 测试仅使用模拟 JSON-RPC 数据和本地 SQLite，不通过制造真实超温、失控或 MCU 故障来测试。仍需在 RK3588 上验证 Moonraker、Hermes Gateway 与飞书投递的版本匹配及稳定性。整机断电或 Linux 死机时，本机无法发信，需要外部心跳监测；硬件超温保护、急停、危险能量切断必须独立于 Hermes。
 
 开发与提交约定见 [仓库开发指南](docs/REPOSITORY_SETUP.zh-CN.md)。
+
+## v0.2.0 快捷查询及统一安装
+
+新增 Hermes Gateway `/kalico status`、`/kalico temp`、`/kalico alerts` 和 `/kalico health`：只读、无需模型推理。监控本体仍为独立 systemd 用户服务。详细安装及权限配置参见 [v0.2 部署说明](docs/V0.2_INSTALL.zh-CN.md)。本版本仍未经过真实飞书网关及 RK3588 实机验收。
+
+### 打印过程定时状态推送（可选）
+
+在 `~/.config/kalico-monitor/monitor.env` 添加或修改：
+
+```ini
+# 0=关闭；5~1440=每隔 N 分钟推送一次，建议 30 或 60
+KALICO_PROGRESS_REPORT_MINUTES=30
+```
+
+修改后执行 `systemctl --user restart kalico-monitor`（系统级服务使用 `sudo systemctl restart kalico-monitor`）。仅打印状态为 `printing` 且 Kalico 为 `ready`、Moonraker 状态最近更新时发送；暂停、Shutdown、断连期间不定时发送，恢复打印后重新计时。不把打印完成、暂停、故障告警当作定时消息。信息来自 Moonraker，包括文件、文件位置估算进度、已打印时间、喷嘴/热床温度、可用时的当前层/总层。进度并非质量判定；没有字段则显示“未知”。默认关闭，不调用 LLM。
+
+每次报告按打印任务代次与序号生成唯一 ID，和下次发送时间一起持久化到 SQLite；Hermes 暂时不可用时沿用现有 Webhook 重试队列。**当系统恢复网络后，队列中未发送的旧报告也可能被补发**；不要将其当作实时状态，实际状态请用 `/kalico status` 查询。

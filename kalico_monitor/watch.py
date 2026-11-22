@@ -8,7 +8,6 @@ from __future__ import annotations
 from typing import Any
 
 STOPPED = {"shutdown", "error"}
-TERMINAL = {"complete", "error", "cancelled"}
 
 
 def as_number(value: Any) -> float | None:

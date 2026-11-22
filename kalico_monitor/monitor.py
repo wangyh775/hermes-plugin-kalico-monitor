@@ -15,13 +15,16 @@ import aiohttp
 from .config import Settings
 from .events import Alert, EventProcessor
 from .notifier import deliver
+from .reports import PeriodicReporter
 from .storage import Outbox
 
 LOG = logging.getLogger("kalico-monitor")
 SUBSCRIBE = {"jsonrpc": "2.0", "method": "printer.objects.subscribe",
-             "params": {"objects": {"print_stats": None, "webhooks": None, "virtual_sdcard": None}}, "id": 1}
+             "params": {"objects": {"print_stats": None, "webhooks": None,
+                                    "virtual_sdcard": None, "extruder": None,
+                                    "heater_bed": None}}, "id": 1}
 QUERY = {"jsonrpc": "2.0", "method": "printer.objects.query",
-         "params": {"objects": {"print_stats": None, "webhooks": None, "virtual_sdcard": None}}, "id": 2}
+         "params": {"objects": {"webhooks": None}}, "id": 2}
 
 
 class Monitor:
@@ -29,6 +32,9 @@ class Monitor:
         self.settings = settings
         self.store = store
         self.last_store_at = 0.0
+        self.last_heartbeat_at = float("-inf")
+        self.last_status_received_at: float | None = None
+        self.reporter = PeriodicReporter(store, settings.progress_report_minutes)
         self.last_stored_state = store.get_state()
         self.klippy_down_since: float | None = None
         self.klippy_down_alerted = False
@@ -50,6 +56,11 @@ class Monitor:
             self.last_store_at = time.monotonic()
             for alert in alerts:
                 LOG.warning("queued %s %s", alert.kind, alert.detail)
+
+    def _heartbeat(self) -> None:
+        if time.monotonic() - self.last_heartbeat_at >= 30:
+            self.store.set_meta("last_heartbeat_at", time.time())
+            self.last_heartbeat_at = time.monotonic()
 
     def _new_incident(self, key: str) -> int:
         value = int(self.store.get_meta(key, 0)) + 1
@@ -78,6 +89,8 @@ class Monitor:
             await asyncio.sleep(2)
 
     def _process_snapshot(self, processor: EventProcessor, snapshot: dict):
+        self._heartbeat()
+        self.last_status_received_at = time.monotonic()
         if self.ws_offline_notified:
             self._system_alert("moonraker_recovered", self.ws_offline_id,
                                "Moonraker subscription restored", "info")
@@ -106,6 +119,7 @@ class Monitor:
             self.klippy_down_alerted = False
 
     def _tick(self, processor: EventProcessor):
+        self._heartbeat()
         # Shutdown notification may have no payload. If query never returns,
         # issue generic shutdown warning rather than suppressing the event.
         if (self.shutdown_query_since is not None and
@@ -121,6 +135,14 @@ class Monitor:
         if processor.has_snapshot:
             current, alerts = processor.evaluate(time.time())
             self._save(current, alerts)
+            connected = (
+                self.klippy_down_since is None
+                and self.shutdown_query_since is None
+                and self.last_status_received_at is not None
+                and time.monotonic() - self.last_status_received_at <= 120
+            )
+            if self.reporter.evaluate(current, processor.status, time.time(), connected=connected):
+                LOG.info("periodic progress report queued")
         if (self.klippy_down_since is not None and not self.klippy_down_alerted
                 and time.monotonic() - self.klippy_down_since >= self.settings.disconnect_seconds):
             self.klippy_down_id = self._new_incident("klippy_incidents")
@@ -157,28 +179,61 @@ class Monitor:
                     continue
                 if not isinstance(packet, dict):
                     continue
-                if packet.get("id") in (1, 2):
+                reply_id = packet.get("id")
+                if reply_id == 1:
+                    # A subscription reply is the complete initial snapshot.
                     if "error" in packet:
-                        raise RuntimeError("Moonraker subscription/query rejected")
+                        raise RuntimeError("Moonraker subscription rejected")
                     result = packet.get("result", {})
                     snapshot = result.get("status") if isinstance(result, dict) else None
-                    if isinstance(snapshot, dict):
-                        self._process_snapshot(processor, snapshot)
+                    if not isinstance(snapshot, dict):
+                        raise RuntimeError("Moonraker subscription returned no status")
+                    self._process_snapshot(processor, snapshot)
+                    continue
+                if reply_id == 2:
+                    # A Klippy failure may reject object queries while Moonraker
+                    # itself remains reachable. Keep the WebSocket connected.
+                    if "error" in packet:
+                        LOG.warning("Moonraker webhooks query rejected; keeping connection")
+                        continue
+                    result = packet.get("result", {})
+                    snapshot = result.get("status") if isinstance(result, dict) else None
+                    if isinstance(snapshot, dict) and isinstance(snapshot.get("webhooks"), dict):
+                        update = {"webhooks": snapshot["webhooks"]}
+                        if processor.has_snapshot:
+                            current, alerts = processor.apply_update(update, time.time())
+                        else:
+                            current, alerts = processor.set_snapshot(update, time.time())
+                        self._save(current, alerts)
+                        hooks_state = snapshot["webhooks"].get("state")
+                        if hooks_state in {"shutdown", "error"}:
+                            self.shutdown_query_since = None
+                            self.klippy_down_since = None
+                        elif hooks_state == "ready":
+                            self.shutdown_query_since = None
+                            self._klippy_recovered()
+                        elif hooks_state in {"disconnected", "startup"}:
+                            self._klippy_disconnected()
                     continue
 
                 method = packet.get("method")
                 if method == "notify_klippy_shutdown":
+                    self.last_status_received_at = None
                     self.shutdown_query_since = time.monotonic()
                     await ws.send_json(QUERY)
                 elif method == "notify_klippy_disconnected":
+                    self.last_status_received_at = None
                     self._klippy_disconnected()
                     await ws.send_json(QUERY)
                 elif method == "notify_klippy_ready":
+                    self.last_status_received_at = None
                     self._klippy_recovered()
                     await ws.send_json(SUBSCRIBE)
                 else:
                     current, alerts = processor.handle_packet(packet, time.time())
                     if current is not None:
+                        if method == "notify_status_update":
+                            self.last_status_received_at = time.monotonic()
                         self._save(current, alerts)
                         hooks = processor.status.get("webhooks", {})
                         if hooks.get("state") == "ready":
@@ -188,7 +243,7 @@ class Monitor:
                 self._tick(processor)
 
     async def run(self):
-        headers = {"User-Agent": "hermes-plugin-kalico-monitor/0.1"}
+        headers = {"User-Agent": "hermes-plugin-kalico-monitor/0.2"}
         async with aiohttp.ClientSession(headers=headers, trust_env=False) as session:
             sender = asyncio.create_task(self._dispatch(session))
             try:
@@ -199,6 +254,8 @@ class Monitor:
                         raise
                     except (aiohttp.ClientError, OSError, TimeoutError,
                             ConnectionError, RuntimeError) as exc:
+                        self.reporter.suspend()
+                        self.last_status_received_at = None
                         LOG.warning("Moonraker WebSocket problem: %s", type(exc).__name__)
                         if self.ws_offline_since is None:
                             self.ws_offline_since = time.monotonic()
