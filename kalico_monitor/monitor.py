@@ -254,6 +254,8 @@ class Monitor:
                         raise
                     except (aiohttp.ClientError, OSError, TimeoutError,
                             ConnectionError, RuntimeError) as exc:
+                        self.reporter.suspend()
+                        self.last_status_received_at = None
                         LOG.warning("Moonraker WebSocket problem: %s", type(exc).__name__)
                         if self.ws_offline_since is None:
                             self.ws_offline_since = time.monotonic()
