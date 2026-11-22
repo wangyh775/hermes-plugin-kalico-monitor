@@ -14,7 +14,8 @@ import aiohttp
 
 from .config import Settings
 from .events import Alert, EventProcessor
-from .force import ForceEventTracker, OBJECT as FORCE_OBJECT
+from .force import OBJECT as FORCE_OBJECT
+from .force import ForceEventTracker
 from .notifier import deliver
 from .reports import PeriodicReporter
 from .storage import Outbox

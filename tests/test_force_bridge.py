@@ -9,7 +9,7 @@ from aiohttp import web
 from kalico_monitor.config import Settings
 from kalico_monitor.events import EventProcessor
 from kalico_monitor.force import ForceEventTracker, alert_detail, format_force
-from kalico_monitor.monitor import Monitor, SUBSCRIBE, subscribe_request
+from kalico_monitor.monitor import SUBSCRIBE, Monitor, subscribe_request
 from kalico_monitor.quick import execute
 from kalico_monitor.storage import Outbox
 
