@@ -1,27 +1,35 @@
 name: kalico-monitor
-version: 0.1.0
+version: 0.2.0
 manifest_version: 2
 requires_hermes: ">=0.21.6"
 description: >-
-  Read-only Hermes tools plus an independently supervised Moonraker WebSocket
-  monitor with SQLite outbox and signed Hermes direct-delivery webhooks.
-  No camera, no LLM calls for automatic alerts, no printer control operations.
-author: wangyh775 (realtime extension inspired by TakeshiTGAL/klipper-print-watch)
+  Read-only /kalico status, temp, alerts, health slash commands without LLM
+  plus a separately supervised realtime Moonraker WebSocket alert daemon.
+author: wangyh775 (state logic adapted from TakeshiTGAL/klipper-print-watch)
 license: MIT
 homepage: https://github.com/wangyh775/hermes-plugin-kalico-monitor
-tags: [kalico, klipper, moonraker, realtime, monitor, alert]
+tags: [kalico, klipper, moonraker, realtime, monitoring, feishu]
 provides_tools:
   - kalico_status
   - kalico_monitor_health
-requires_env:
-  - name: MOONRAKER_URL
-    description: Moonraker origin, for example http://127.0.0.1:7125
-    prompt: Moonraker URL
+optional_env:
+  - name: KALICO_MONITOR_ENV_FILE
+    description: Path to the shared Kalico monitor environment file (same Linux user)
+    prompt: Shared monitor environment file path
     secret: false
     password: false
-optional_env:
+  - name: MOONRAKER_URL
+    description: Optional override of the shared Moonraker URL
+    prompt: Moonraker URL (optional when shared config exists)
+    secret: false
+    password: false
   - name: MOONRAKER_API_KEY
-    description: Optional Moonraker API key
-    prompt: API key (empty for trusted local host)
+    description: Optional key for Moonraker; never returned to a chat
+    prompt: Moonraker API key (optional)
     secret: true
     password: true
+  - name: KALICO_ALLOWED_CHAT_IDS
+    description: Comma-separated IDs of chats permitted to use /kalico remotely
+    prompt: Allowed chat IDs (required for Feishu queries)
+    secret: false
+    password: false

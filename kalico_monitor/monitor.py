@@ -29,6 +29,7 @@ class Monitor:
         self.settings = settings
         self.store = store
         self.last_store_at = 0.0
+        self.last_heartbeat_at = float("-inf")
         self.last_stored_state = store.get_state()
         self.klippy_down_since: float | None = None
         self.klippy_down_alerted = False
@@ -50,6 +51,11 @@ class Monitor:
             self.last_store_at = time.monotonic()
             for alert in alerts:
                 LOG.warning("queued %s %s", alert.kind, alert.detail)
+
+    def _heartbeat(self) -> None:
+        if time.monotonic() - self.last_heartbeat_at >= 30:
+            self.store.set_meta("last_heartbeat_at", time.time())
+            self.last_heartbeat_at = time.monotonic()
 
     def _new_incident(self, key: str) -> int:
         value = int(self.store.get_meta(key, 0)) + 1
@@ -78,6 +84,7 @@ class Monitor:
             await asyncio.sleep(2)
 
     def _process_snapshot(self, processor: EventProcessor, snapshot: dict):
+        self._heartbeat()
         if self.ws_offline_notified:
             self._system_alert("moonraker_recovered", self.ws_offline_id,
                                "Moonraker subscription restored", "info")
@@ -106,6 +113,7 @@ class Monitor:
             self.klippy_down_alerted = False
 
     def _tick(self, processor: EventProcessor):
+        self._heartbeat()
         # Shutdown notification may have no payload. If query never returns,
         # issue generic shutdown warning rather than suppressing the event.
         if (self.shutdown_query_since is not None and
