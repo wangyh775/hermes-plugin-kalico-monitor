@@ -14,6 +14,7 @@ import aiohttp
 
 from .config import Settings
 from .events import Alert, EventProcessor
+from .force import ForceEventTracker, OBJECT as FORCE_OBJECT
 from .notifier import deliver
 from .reports import PeriodicReporter
 from .storage import Outbox
@@ -23,6 +24,14 @@ SUBSCRIBE = {"jsonrpc": "2.0", "method": "printer.objects.subscribe",
              "params": {"objects": {"print_stats": None, "webhooks": None,
                                     "virtual_sdcard": None, "extruder": None,
                                     "heater_bed": None}}, "id": 1}
+def subscribe_request(include_force: bool = False) -> dict:
+    """Optional objects are opt-in; use base subscription on unsupported Klippy."""
+    objects = dict(SUBSCRIBE["params"]["objects"])
+    if include_force:
+        objects[FORCE_OBJECT] = None
+    return {**SUBSCRIBE, "params": {"objects": objects}}
+
+
 QUERY = {"jsonrpc": "2.0", "method": "printer.objects.query",
          "params": {"objects": {"webhooks": None}}, "id": 2}
 
@@ -35,6 +44,7 @@ class Monitor:
         self.last_heartbeat_at = float("-inf")
         self.last_status_received_at: float | None = None
         self.reporter = PeriodicReporter(store, settings.progress_report_minutes)
+        self.force_tracker = ForceEventTracker(store) if settings.watch_nozzle_force else None
         self.last_stored_state = store.get_state()
         self.klippy_down_since: float | None = None
         self.klippy_down_alerted = False
@@ -56,6 +66,14 @@ class Monitor:
             self.last_store_at = time.monotonic()
             for alert in alerts:
                 LOG.warning("queued %s %s", alert.kind, alert.detail)
+
+    def _record(self, processor: EventProcessor, current: dict, alerts: list[Alert]) -> None:
+        """Persist optional force events before generic pause notifications."""
+        if self.force_tracker is not None:
+            self.force_tracker.observe(processor.status, current)
+            if self.force_tracker.suppress_generic_pause(current):
+                alerts = [a for a in alerts if a.kind != "paused"]
+        self._save(current, alerts)
 
     def _heartbeat(self) -> None:
         if time.monotonic() - self.last_heartbeat_at >= 30:
@@ -97,7 +115,7 @@ class Monitor:
         self.ws_offline_since = None
         self.ws_offline_notified = False
         state, alerts = processor.set_snapshot(snapshot, time.time())
-        self._save(state, alerts)
+        self._record(processor, state, alerts)
         hooks = snapshot.get("webhooks", {})
         if isinstance(hooks, dict) and hooks.get("state") == "ready":
             self._klippy_recovered()
@@ -131,10 +149,10 @@ class Monitor:
                 current, alerts = processor.apply_update(delta, time.time())
             else:
                 current, alerts = processor.set_snapshot(delta, time.time())
-            self._save(current, alerts)
+            self._record(processor, current, alerts)
         if processor.has_snapshot:
             current, alerts = processor.evaluate(time.time())
-            self._save(current, alerts)
+            self._record(processor, current, alerts)
             connected = (
                 self.klippy_down_since is None
                 and self.shutdown_query_since is None
@@ -157,7 +175,8 @@ class Monitor:
         async with session.ws_connect(self.settings.ws_url, headers=headers,
                                       heartbeat=20) as ws:
             LOG.info("Moonraker connected; subscribing to status")
-            await ws.send_json(SUBSCRIBE)
+            include_force = self.settings.watch_nozzle_force
+            await ws.send_json(subscribe_request(include_force))
             requested_at = time.monotonic()
             while True:
                 if not processor.has_snapshot and time.monotonic() - requested_at > 20:
@@ -183,6 +202,13 @@ class Monitor:
                 if reply_id == 1:
                     # A subscription reply is the complete initial snapshot.
                     if "error" in packet:
+                        if include_force:
+                            LOG.warning("Optional nozzle_force_monitor subscribe rejected; "
+                                        "falling back to base status subscription")
+                            include_force = False
+                            requested_at = time.monotonic()
+                            await ws.send_json(subscribe_request(False))
+                            continue
                         raise RuntimeError("Moonraker subscription rejected")
                     result = packet.get("result", {})
                     snapshot = result.get("status") if isinstance(result, dict) else None
@@ -204,7 +230,7 @@ class Monitor:
                             current, alerts = processor.apply_update(update, time.time())
                         else:
                             current, alerts = processor.set_snapshot(update, time.time())
-                        self._save(current, alerts)
+                        self._record(processor, current, alerts)
                         hooks_state = snapshot["webhooks"].get("state")
                         if hooks_state in {"shutdown", "error"}:
                             self.shutdown_query_since = None
@@ -228,13 +254,15 @@ class Monitor:
                 elif method == "notify_klippy_ready":
                     self.last_status_received_at = None
                     self._klippy_recovered()
-                    await ws.send_json(SUBSCRIBE)
+                    include_force = self.settings.watch_nozzle_force
+                    requested_at = time.monotonic()
+                    await ws.send_json(subscribe_request(include_force))
                 else:
                     current, alerts = processor.handle_packet(packet, time.time())
                     if current is not None:
                         if method == "notify_status_update":
                             self.last_status_received_at = time.monotonic()
-                        self._save(current, alerts)
+                        self._record(processor, current, alerts)
                         hooks = processor.status.get("webhooks", {})
                         if hooks.get("state") == "ready":
                             self._klippy_recovered()
@@ -243,7 +271,7 @@ class Monitor:
                 self._tick(processor)
 
     async def run(self):
-        headers = {"User-Agent": "hermes-plugin-kalico-monitor/0.2"}
+        headers = {"User-Agent": "hermes-plugin-kalico-monitor/0.3"}
         async with aiohttp.ClientSession(headers=headers, trust_env=False) as session:
             sender = asyncio.create_task(self._dispatch(session))
             try:

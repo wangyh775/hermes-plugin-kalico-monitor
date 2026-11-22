@@ -8,14 +8,15 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from .status import query_status
+from .force import format_force
+from .status import query_force_status, query_status
 
-SUBCOMMANDS = frozenset({"status", "temp", "alerts", "health", "help"})
+SUBCOMMANDS = frozenset({"status", "temp", "alerts", "health", "force", "help"})
 CONFIG_KEYS = frozenset({
     "MOONRAKER_URL", "MOONRAKER_API_KEY", "KALICO_MONITOR_DB",
     "KALICO_PRINTER_NAME", "KALICO_ALLOWED_CHAT_IDS",
 })
-HELP = "用法：/kalico [status|temp|alerts|health|help]（仅查询，不控制打印机）"
+HELP = "用法：/kalico [status|temp|alerts|health|force|help]（仅查询，不控制打印机）"
 LOCAL_PLATFORMS = frozenset({"cli", "tui", "desktop", "local"})
 
 
@@ -180,7 +181,9 @@ def format_health(data: dict, printer: str = "Kalico", now: float | None = None)
 
 
 def execute(raw_args: str, *, get_secret: Callable[[str], str] | None = None,
-            query: Callable[[str, str], dict] = query_status, now: float | None = None) -> str:
+            query: Callable[[str, str], dict] = query_status,
+            force_query: Callable[[str, str], dict] = query_force_status,
+            now: float | None = None) -> str:
     parts = (raw_args or "").lower().strip().split()
     if len(parts) > 1 or (parts and parts[0] not in SUBCOMMANDS):
         return HELP
@@ -194,6 +197,10 @@ def execute(raw_args: str, *, get_secret: Callable[[str], str] | None = None,
             data = query(url, setting("MOONRAKER_API_KEY", get_secret))
             return (format_status(data, printer) if subcommand == "status"
                     else format_temp(data, printer))
+        if subcommand == "force":
+            url = setting("MOONRAKER_URL", get_secret) or "http://127.0.0.1:7125"
+            data = force_query(url, setting("MOONRAKER_API_KEY", get_secret))
+            return format_force(data, printer)
         data = read_monitor(database_path(get_secret))
         return (format_alerts(data, printer) if subcommand == "alerts"
                 else format_health(data, printer, now))

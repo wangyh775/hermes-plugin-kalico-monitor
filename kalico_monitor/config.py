@@ -18,6 +18,7 @@ class Settings:
     disconnect_seconds: int
     stall_minutes: int
     progress_report_minutes: int = 0
+    watch_nozzle_force: bool = False
 
     @classmethod
     def load(cls) -> "Settings":
@@ -40,12 +41,16 @@ class Settings:
             raise ValueError("KALICO_PROGRESS_REPORT_MINUTES must be between 0 and 1440")
         if 0 < report_minutes < 5:
             raise ValueError("Progress reporting interval must be at least 5 minutes")
+        raw_force = os.getenv("KALICO_WATCH_NOZZLE_FORCE", "0").strip().lower()
+        if raw_force not in {"0", "1", "true", "false", "yes", "no", "on", "off"}:
+            raise ValueError("KALICO_WATCH_NOZZLE_FORCE must be a boolean")
+        watch_force = raw_force in {"1", "true", "yes", "on"}
         return cls(printer=os.getenv("KALICO_PRINTER_NAME", "PEEK-01"),
                    moonraker_url=mr, moonraker_api_key=os.getenv("MOONRAKER_API_KEY", ""),
                    hermes_url=hermes, hermes_secret=secret, sqlite_path=db,
                    disconnect_seconds=max(5, int(os.getenv("KALICO_DISCONNECT_SECONDS", "25"))),
                    stall_minutes=max(0, int(os.getenv("KALICO_STALL_MINUTES", "0"))),
-                   progress_report_minutes=report_minutes)
+                   progress_report_minutes=report_minutes, watch_nozzle_force=watch_force)
 
     @property
     def ws_url(self) -> str:

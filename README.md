@@ -100,3 +100,7 @@ Based on the MIT-licensed state comparison ideas in [TakeshiTGAL/hermes-plugin-k
 Set `KALICO_PROGRESS_REPORT_MINUTES=30` in the Monitor environment file (0=disabled, 5..1440 permitted). Restart the systemd monitor service. While `print_stats.state=printing` and Klippy is ready with recently updated Moonraker status, the Monitor sends a direct, zero-LLM Hermes Webhook every 30 minutes with filename, estimated file progress, print elapsed time, nozzle/bed temperatures, and available layer info. The timer is persisted alongside the SQLite outbox; it pauses when printing pauses, the device shuts down, or the Moonraker connection goes stale. Delivery retries use the existing signed Webhook and stable per-report ID. Previously queued reports may be delivered after connectivity is restored and should not be mistaken for live status.
 
 See [Chinese installation guide](docs/V0.2_INSTALL.zh-CN.md).
+
+## Optional custom nozzle force anomaly alerts
+
+Set `KALICO_WATCH_NOZZLE_FORCE=1` to subscribe to the custom Klippy PR #13 `nozzle_force_monitor` object. Alerts are based on `triggered` and `trigger_count` changes, use the existing SQLite/Hermes delivery queue, and never control the printer. If the object is absent, Monitor falls back to the original subscription. `/kalico force` is a read-only, zero-LLM Feishu command. See the [Chinese guide](docs/V0.2_INSTALL.zh-CN.md).

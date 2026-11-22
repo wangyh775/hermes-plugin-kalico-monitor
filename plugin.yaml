@@ -1,9 +1,9 @@
 name: kalico-monitor
-version: 0.2.0
+version: 0.3.0
 manifest_version: 2
 requires_hermes: ">=0.21.6"
 description: >-
-  Read-only /kalico status, temp, alerts, health slash commands without LLM
+  Read-only /kalico status, temp, force, alerts, health slash commands without LLM
   plus a separately supervised realtime Moonraker WebSocket alert daemon.
 author: wangyh775 (state logic adapted from TakeshiTGAL/klipper-print-watch)
 license: MIT
@@ -12,6 +12,7 @@ tags: [kalico, klipper, moonraker, realtime, monitoring, feishu]
 provides_tools:
   - kalico_status
   - kalico_monitor_health
+  - kalico_force
 optional_env:
   - name: KALICO_MONITOR_ENV_FILE
     description: Path to the shared Kalico monitor environment file (same Linux user)

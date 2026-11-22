@@ -11,10 +11,10 @@ import json
 def register(ctx) -> None:
     if __package__:
         from .kalico_monitor.quick import database_path, execute, is_allowed, read_monitor, setting
-        from .kalico_monitor.status import query_status
+        from .kalico_monitor.status import query_force_status, query_status
     else:
         from kalico_monitor.quick import database_path, execute, is_allowed, read_monitor, setting
-        from kalico_monitor.status import query_status
+        from kalico_monitor.status import query_force_status, query_status
 
     def _secret(name: str) -> str:
         try:
@@ -33,6 +33,16 @@ def register(ctx) -> None:
         except (OSError, ValueError, RuntimeError):
             return json.dumps({"ok": False, "error": "moonraker_unavailable"})
 
+    def _force(_args=None, **_kwargs):
+        try:
+            status = query_force_status(
+                setting("MOONRAKER_URL", _secret) or "http://127.0.0.1:7125",
+                setting("MOONRAKER_API_KEY", _secret),
+            )
+            return json.dumps({"status": status}, ensure_ascii=False)
+        except (OSError, ValueError, RuntimeError):
+            return json.dumps({"ok": False, "error": "nozzle_force_unavailable"})
+
     def _health(_args=None, **_kwargs):
         try:
             report = read_monitor(database_path(_secret))
@@ -49,8 +59,8 @@ def register(ctx) -> None:
 
     ctx.register_command(
         "kalico", handler=_slash,
-        description="零模型查询 Kalico 打印机：状态、温度、告警、监控健康",
-        args_hint="[status|temp|alerts|health|help]",
+        description="零模型查询 Kalico：状态、温度、喷嘴力、告警、监控健康",
+        args_hint="[status|temp|force|alerts|health|help]",
     )
     ctx.register_tool(
         name="kalico_status", toolset="kalico_monitor", handler=_status,
@@ -62,5 +72,12 @@ def register(ctx) -> None:
         name="kalico_monitor_health", toolset="kalico_monitor", handler=_health,
         emoji="🔔", schema={"name": "kalico_monitor_health",
             "description": "Read-only monitor heartbeat, recent alerts and outbox queue.",
+            "parameters": {"type": "object", "properties": {}}},
+    )
+
+    ctx.register_tool(
+        name="kalico_force", toolset="kalico_monitor", handler=_force,
+        emoji="🧰", schema={"name": "kalico_force",
+            "description": "Read-only query of custom Klippy nozzle force and rebound detector status.",
             "parameters": {"type": "object", "properties": {}}},
     )
