@@ -94,3 +94,9 @@ Based on the MIT-licensed state comparison ideas in [TakeshiTGAL/hermes-plugin-k
 - v0.1: WebSocket, state classifier, SQLite outbox, Hermes direct delivery, simulated tests.
 - v0.2: better error-context correlation, ack/escalation, detailed reliability metrics and diagnostics.
 - v0.3: optional multi-printer config and external heartbeat integration.
+
+## Optional periodic print progress delivery
+
+Set `KALICO_PROGRESS_REPORT_MINUTES=30` in the Monitor environment file (0=disabled, 5..1440 permitted). Restart the systemd monitor service. While `print_stats.state=printing` and Klippy is ready with recently updated Moonraker status, the Monitor sends a direct, zero-LLM Hermes Webhook every 30 minutes with filename, estimated file progress, print elapsed time, nozzle/bed temperatures, and available layer info. The timer is persisted alongside the SQLite outbox; it pauses when printing pauses, the device shuts down, or the Moonraker connection goes stale. Delivery retries use the existing signed Webhook and stable per-report ID. Previously queued reports may be delivered after connectivity is restored and should not be mistaken for live status.
+
+See [Chinese installation guide](docs/V0.2_INSTALL.zh-CN.md).

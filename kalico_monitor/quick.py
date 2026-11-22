@@ -142,7 +142,7 @@ def read_monitor(path: Path, limit: int = 5) -> dict:
         count = conn.execute("SELECT COUNT(*) FROM alerts WHERE delivered IS NULL").fetchone()[0]
         rows = conn.execute(
             "SELECT kind,severity,filename,detail,created,delivered "
-            "FROM alerts ORDER BY created DESC LIMIT ?", (min(max(limit, 1), 10),)
+            "FROM alerts WHERE kind != 'print_progress' ORDER BY created DESC LIMIT ?", (min(max(limit, 1), 10),)
         ).fetchall()
     return {"exists": True, "pending": count, "recent": [dict(r) for r in rows],
             "heartbeat": heartbeat}

@@ -17,6 +17,7 @@ class Settings:
     sqlite_path: Path
     disconnect_seconds: int
     stall_minutes: int
+    progress_report_minutes: int = 0
 
     @classmethod
     def load(cls) -> "Settings":
@@ -34,11 +35,17 @@ class Settings:
             raise ValueError("Hermes Webhook must use HTTPS except for localhost")
         base = Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local/state")))
         db = Path(os.getenv("KALICO_MONITOR_DB", str(base / "kalico-monitor/alerts.sqlite3"))).expanduser()
+        report_minutes = int(os.getenv("KALICO_PROGRESS_REPORT_MINUTES", "0"))
+        if report_minutes < 0 or report_minutes > 1440:
+            raise ValueError("KALICO_PROGRESS_REPORT_MINUTES must be between 0 and 1440")
+        if 0 < report_minutes < 5:
+            raise ValueError("Progress reporting interval must be at least 5 minutes")
         return cls(printer=os.getenv("KALICO_PRINTER_NAME", "PEEK-01"),
                    moonraker_url=mr, moonraker_api_key=os.getenv("MOONRAKER_API_KEY", ""),
                    hermes_url=hermes, hermes_secret=secret, sqlite_path=db,
                    disconnect_seconds=max(5, int(os.getenv("KALICO_DISCONNECT_SECONDS", "25"))),
-                   stall_minutes=max(0, int(os.getenv("KALICO_STALL_MINUTES", "0"))))
+                   stall_minutes=max(0, int(os.getenv("KALICO_STALL_MINUTES", "0"))),
+                   progress_report_minutes=report_minutes)
 
     @property
     def ws_url(self) -> str:
