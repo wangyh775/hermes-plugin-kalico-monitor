@@ -79,6 +79,14 @@ class PeriodicReporter:
         if not isinstance(self.tracker, dict):
             self.tracker = None
 
+    def suspend(self) -> None:
+        """Forget an active countdown after transport loss, retaining sequence IDs."""
+        if self.interval_seconds == 0 or not self.tracker:
+            return
+        if self.tracker.get("next_due_at") is not None:
+            self.tracker = {**self.tracker, "next_due_at": None}
+            self.store.report_checkpoint(META_KEY, self.tracker)
+
     def evaluate(self, state: dict, status: dict, now: float, connected: bool = True) -> bool:
         """Return whether a report was enqueued; no output when disabled."""
         if self.interval_seconds == 0:
