@@ -136,6 +136,27 @@ def test_new_generation_same_filename_does_not_reuse_old_schedule(tmp_path):
         db.close()
 
 
+
+def test_websocket_loss_suspends_pending_report_without_losing_sequence(tmp_path):
+    path = tmp_path / "offline.sqlite3"
+    db = Outbox(path, "PEEK-01")
+    try:
+        scheduler = PeriodicReporter(db, 5)
+        state, status = sample_state(), sample_status()
+        assert not scheduler.evaluate(state, status, 100)
+        assert scheduler.evaluate(state, status, 400)
+        scheduler.suspend()
+        assert scheduler.tracker["next_due_at"] is None
+        after_restart = PeriodicReporter(db, 5)
+        assert not after_restart.evaluate(state, status, 1200)
+        assert not after_restart.evaluate(state, status, 1499)
+        assert after_restart.evaluate(state, status, 1500)
+        assert after_restart.tracker["sequence"] == 2
+        assert len(db.pending()) == 2
+    finally:
+        db.close()
+
+
 def test_progress_alert_does_not_duplicate_critical_alert(tmp_path):
     db = Outbox(tmp_path / "alerts.sqlite3", "PEEK-01")
     try:
