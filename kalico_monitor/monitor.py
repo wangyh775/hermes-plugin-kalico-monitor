@@ -15,11 +15,14 @@ import aiohttp
 from .config import Settings
 from .events import Alert, EventProcessor
 from .notifier import deliver
+from .reports import PeriodicReporter
 from .storage import Outbox
 
 LOG = logging.getLogger("kalico-monitor")
 SUBSCRIBE = {"jsonrpc": "2.0", "method": "printer.objects.subscribe",
-             "params": {"objects": {"print_stats": None, "webhooks": None, "virtual_sdcard": None}}, "id": 1}
+             "params": {"objects": {"print_stats": None, "webhooks": None,
+                                    "virtual_sdcard": None, "extruder": None,
+                                    "heater_bed": None}}, "id": 1}
 QUERY = {"jsonrpc": "2.0", "method": "printer.objects.query",
          "params": {"objects": {"webhooks": None}}, "id": 2}
 
@@ -30,6 +33,8 @@ class Monitor:
         self.store = store
         self.last_store_at = 0.0
         self.last_heartbeat_at = float("-inf")
+        self.last_status_received_at: float | None = None
+        self.reporter = PeriodicReporter(store, settings.progress_report_minutes)
         self.last_stored_state = store.get_state()
         self.klippy_down_since: float | None = None
         self.klippy_down_alerted = False
@@ -85,6 +90,7 @@ class Monitor:
 
     def _process_snapshot(self, processor: EventProcessor, snapshot: dict):
         self._heartbeat()
+        self.last_status_received_at = time.monotonic()
         if self.ws_offline_notified:
             self._system_alert("moonraker_recovered", self.ws_offline_id,
                                "Moonraker subscription restored", "info")
@@ -129,6 +135,14 @@ class Monitor:
         if processor.has_snapshot:
             current, alerts = processor.evaluate(time.time())
             self._save(current, alerts)
+            connected = (
+                self.klippy_down_since is None
+                and self.shutdown_query_since is None
+                and self.last_status_received_at is not None
+                and time.monotonic() - self.last_status_received_at <= 120
+            )
+            if self.reporter.evaluate(current, processor.status, time.time(), connected=connected):
+                LOG.info("periodic progress report queued")
         if (self.klippy_down_since is not None and not self.klippy_down_alerted
                 and time.monotonic() - self.klippy_down_since >= self.settings.disconnect_seconds):
             self.klippy_down_id = self._new_incident("klippy_incidents")
@@ -204,17 +218,22 @@ class Monitor:
 
                 method = packet.get("method")
                 if method == "notify_klippy_shutdown":
+                    self.last_status_received_at = None
                     self.shutdown_query_since = time.monotonic()
                     await ws.send_json(QUERY)
                 elif method == "notify_klippy_disconnected":
+                    self.last_status_received_at = None
                     self._klippy_disconnected()
                     await ws.send_json(QUERY)
                 elif method == "notify_klippy_ready":
+                    self.last_status_received_at = None
                     self._klippy_recovered()
                     await ws.send_json(SUBSCRIBE)
                 else:
                     current, alerts = processor.handle_packet(packet, time.time())
                     if current is not None:
+                        if method == "notify_status_update":
+                            self.last_status_received_at = time.monotonic()
                         self._save(current, alerts)
                         hooks = processor.status.get("webhooks", {})
                         if hooks.get("state") == "ready":
@@ -224,7 +243,7 @@ class Monitor:
                 self._tick(processor)
 
     async def run(self):
-        headers = {"User-Agent": "hermes-plugin-kalico-monitor/0.1"}
+        headers = {"User-Agent": "hermes-plugin-kalico-monitor/0.2"}
         async with aiohttp.ClientSession(headers=headers, trust_env=False) as session:
             sender = asyncio.create_task(self._dispatch(session))
             try:
@@ -235,6 +254,8 @@ class Monitor:
                         raise
                     except (aiohttp.ClientError, OSError, TimeoutError,
                             ConnectionError, RuntimeError) as exc:
+                        self.reporter.suspend()
+                        self.last_status_received_at = None
                         LOG.warning("Moonraker WebSocket problem: %s", type(exc).__name__)
                         if self.ws_offline_since is None:
                             self.ws_offline_since = time.monotonic()
