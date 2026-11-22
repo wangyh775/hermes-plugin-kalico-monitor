@@ -223,6 +223,11 @@ async def test_missing_optional_klippy_object_falls_back_to_standard_subscriptio
         async with aiohttp.ClientSession() as session:
             task = asyncio.create_task(monitor._listen(session))
             await asyncio.wait_for(got_fallback.wait(), timeout=2)
+            for _ in range(50):
+                if db.get_state() is not None:
+                    break
+                await asyncio.sleep(0.01)
+            assert db.get_state() is not None
             assert not task.done()
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
