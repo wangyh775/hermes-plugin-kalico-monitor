@@ -86,3 +86,7 @@ pytest -q
 测试仅使用模拟 JSON-RPC 数据和本地 SQLite，不通过制造真实超温、失控或 MCU 故障来测试。仍需在 RK3588 上验证 Moonraker、Hermes Gateway 与飞书投递的版本匹配及稳定性。整机断电或 Linux 死机时，本机无法发信，需要外部心跳监测；硬件超温保护、急停、危险能量切断必须独立于 Hermes。
 
 开发与提交约定见 [仓库开发指南](docs/REPOSITORY_SETUP.zh-CN.md)。
+
+## v0.2.0 快捷查询及统一安装
+
+新增 Hermes Gateway `/kalico status`、`/kalico temp`、`/kalico alerts` 和 `/kalico health`：只读、无需模型推理。监控本体仍为独立 systemd 用户服务。详细安装及权限配置参见 [v0.2 部署说明](docs/V0.2_INSTALL.zh-CN.md)。本版本仍未经过真实飞书网关及 RK3588 实机验收。
