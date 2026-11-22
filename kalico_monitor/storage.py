@@ -55,6 +55,13 @@ class Outbox:
                 self._insert(alert)
             self._set_meta("watch_state", state)
 
+    def report_checkpoint(self, key: str, tracker: dict, alert: Alert | None = None) -> None:
+        """Queue a periodic report and its next deadline in one transaction."""
+        with self.conn:
+            if alert is not None:
+                self._insert(alert)
+            self._set_meta(key, tracker)
+
     def _insert(self, alert: Alert) -> str:
         digest = hashlib.sha256(f"{self.printer}|{alert.id_key}".encode()).hexdigest()[:32]
         self.conn.execute("""INSERT OR IGNORE INTO alerts

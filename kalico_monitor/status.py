@@ -4,7 +4,7 @@ import json
 import urllib.parse
 import urllib.request
 
-OBJECTS = {"print_stats": None, "webhooks": None, "extruder": None, "heater_bed": None}
+OBJECTS = {"print_stats": None, "webhooks": None, "extruder": None, "heater_bed": None, "virtual_sdcard": None}
 
 
 def query_status(url: str, api_key: str = "", timeout: int = 6) -> dict:

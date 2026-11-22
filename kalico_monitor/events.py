@@ -15,10 +15,12 @@ class Alert:
     filename: str
     detail: str
     severity: str
+    sequence: int | None = None
 
     @property
     def id_key(self) -> str:
-        return f"{self.kind}:{self.generation}:{self.filename}"
+        base = f"{self.kind}:{self.generation}:{self.filename}"
+        return base if self.sequence is None else f"{base}:{self.sequence}"
 
 
 SEVERITY = {
