@@ -16,7 +16,7 @@ CONFIG_KEYS = frozenset({
     "KALICO_PRINTER_NAME", "KALICO_ALLOWED_CHAT_IDS",
 })
 HELP = "用法：/kalico [status|temp|alerts|health|help]（仅查询，不控制打印机）"
-LOCAL_PLATFORMS = frozenset({"", "cli", "tui", "desktop", "local"})
+LOCAL_PLATFORMS = frozenset({"cli", "tui", "desktop", "local"})
 
 
 def shared_config(path: str | Path | None = None) -> dict[str, str]:
