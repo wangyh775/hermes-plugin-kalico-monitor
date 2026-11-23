@@ -306,6 +306,12 @@ class Monitor:
 
 
 def main():
+    # Local configuration is explicit and never starts the monitor daemon.
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "config":
+        from .setup import main as config_main
+        config_main(sys.argv[2:])
+        return
     parser = argparse.ArgumentParser(description="Monitor Kalico through Moonraker; notify via Hermes")
     parser.add_argument("--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING"))
     args = parser.parse_args()

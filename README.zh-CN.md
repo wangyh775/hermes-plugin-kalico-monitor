@@ -40,7 +40,7 @@ Kalico + Moonraker --LAN HTTP/WS--> Kalico Monitor (systemd + SQLite)
 git clone https://github.com/wangyh775/hermes-plugin-kalico-monitor.git
 cd hermes-plugin-kalico-monitor
 bash scripts/setup-user-service.sh
-nano ~/.config/kalico-monitor/monitor.env
+.venv/bin/kalico-monitor config
 ```
 
 填写 `MOONRAKER_URL`、`HERMES_WEBHOOK_SECRET`、`KALICO_MONITOR_DB`、`KALICO_ALLOWED_CHAT_IDS` 等。将 [Webhook 示例](docs/hermes-webhook.example.yaml) 合并进 `~/.hermes/config.yaml`（**不要覆盖原配置**），配置相同 Secret 和目标飞书群 ID。

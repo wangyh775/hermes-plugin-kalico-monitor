@@ -36,7 +36,7 @@ The printer and AI host may be separate machines on a mutually reachable LAN; th
 git clone https://github.com/wangyh775/hermes-plugin-kalico-monitor.git
 cd hermes-plugin-kalico-monitor
 bash scripts/setup-user-service.sh
-nano ~/.config/kalico-monitor/monitor.env
+.venv/bin/kalico-monitor config  # interactive setup (or edit monitor.env manually)
 ```
 
 Set `MOONRAKER_URL`, `HERMES_WEBHOOK_SECRET`, `KALICO_MONITOR_DB`, and `KALICO_ALLOWED_CHAT_IDS`. Merge [the Hermes Webhook example](docs/hermes-webhook.example.yaml) into `~/.hermes/config.yaml`; do not overwrite existing platform configuration. The webhook route secret must match.

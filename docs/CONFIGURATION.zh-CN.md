@@ -2,6 +2,20 @@
 
 以下参数以当前 `kalico_monitor/config.py`、`quick.py` 和 `deploy/kalico-monitor.env.example` 为准。配置主要通过 `~/.config/kalico-monitor/monitor.env` 注入 systemd 服务；修改后重启生效。**目前没有通用的 `events.yaml` 规则引擎，也不支持在飞书中动态调整任意事件阈值。**
 
+## 0. 交互式配置（新增）
+
+~~~bash
+.venv/bin/kalico-monitor config
+.venv/bin/kalico-monitor config --show
+.venv/bin/kalico-monitor config --test
+# 自定义配置文件：
+.venv/bin/kalico-monitor config --file /absolute/path/monitor.env
+~~~
+
+交互菜单按功能分组，按回车保留原值，敏感字段使用隐藏输入；Webhook Secret 可以自动生成 64 位十六进制随机密钥。保存前进行 URL、路径、时间范围等校验，原子写回 `monitor.env` 并设置权限 `0600`；保留文件中的注释和非向导管理的其他变量。修改前可通过菜单取消，不会写入。当前向导只负责本地配置，**不会自动修改 Hermes 的 Webhook 路由 Secret、飞书目标聊天 ID，也不会自动重启 systemd 服务**。
+
+该命令要求在已经安装本项目的 Python 虚拟环境中运行。监控服务原有无参数启动方式保持不变。
+
 ## 1. Monitor 常驻服务参数
 
 | 参数 | 默认值 | 含义及约束 |
