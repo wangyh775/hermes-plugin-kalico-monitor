@@ -80,17 +80,18 @@ def test_shared_config_is_data_not_executable(tmp_path, monkeypatch):
 def test_shared_config_wins_over_stale_hermes_environment_and_secret(tmp_path, monkeypatch):
     config = tmp_path / "monitor.env"
     config.write_text(
-        "MOONRAKER_URL=http://192.168.1.101:7125\\n"
-        "MOONRAKER_API_KEY=new-key\\n"
-        "KALICO_PRINTER_NAME=PEEK-NEW\\n"
+        "MOONRAKER_URL=http://192.168.1.101:7125\n"
+        "MOONRAKER_API_KEY=new-key\n"
+        "KALICO_PRINTER_NAME=PEEK-NEW\n"
     )
     monkeypatch.setenv("KALICO_MONITOR_ENV_FILE", str(config))
     monkeypatch.setenv("MOONRAKER_URL", "http://192.168.1.100:7125")
     monkeypatch.setenv("MOONRAKER_API_KEY", "old-key")
-    secrets = lambda name: {
-        "MOONRAKER_URL": "http://192.168.1.100:7125",
-        "MOONRAKER_API_KEY": "old-key",
-    }.get(name, "")
+    def secrets(name):
+        return {
+            "MOONRAKER_URL": "http://192.168.1.100:7125",
+            "MOONRAKER_API_KEY": "old-key",
+        }.get(name, "")
     assert setting("MOONRAKER_URL", secrets) == "http://192.168.1.101:7125"
     assert setting("MOONRAKER_API_KEY", secrets) == "new-key"
     assert setting("KALICO_PRINTER_NAME", secrets) == "PEEK-NEW"
