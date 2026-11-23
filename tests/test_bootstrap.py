@@ -138,3 +138,59 @@ def test_failed_plugin_install_rolls_back_configs(tmp_path, monkeypatch):
     assert env.read_bytes() == before_env
     assert list(home.glob("config.yaml.bak.*"))
     assert list(tmp_path.glob("monitor.env.bak.*"))
+
+
+def test_reconfigure_cancel_never_changes_existing_values():
+    current = {
+        "MOONRAKER_URL": "http://192.168.1.100:7125",
+        "KALICO_PRINTER_NAME": "PEEK-01",
+        "KALICO_EVENT_MODES": "klippy_shutdown=both,complete=direct",
+    }
+    answers = iter(["1", "http://192.168.1.101:7125", "0"])
+    result = bootstrap.reconfigure_menu(
+        current, ask=lambda _="": next(answers), out=lambda _line: None)
+    assert result is None
+    assert current["MOONRAKER_URL"] == "http://192.168.1.100:7125"
+
+
+def test_reconfigure_preserves_other_event_modes():
+    from kalico_monitor.setup import defaults
+
+    current = defaults()
+    current["HERMES_WEBHOOK_SECRET"] = "x" * 64
+    current["KALICO_EVENT_MODES"] = "complete=direct,paused=agent,klippy_shutdown=direct"
+    answers = iter(["10", "both", "11", "y"])
+    changes = bootstrap.reconfigure_menu(
+        current, ask=lambda _="": next(answers), out=lambda _line: None)
+    assert changes is not None
+    modes = bootstrap.parse_modes(changes["KALICO_EVENT_MODES"])
+    assert modes["klippy_shutdown"] == "both"
+    assert modes["nozzle_force_anomaly"] == "both"
+    assert modes["complete"] == "direct"
+    assert modes["paused"] == "agent"
+    assert current["KALICO_EVENT_MODES"] == (
+        "complete=direct,paused=agent,klippy_shutdown=direct"
+    )
+
+
+def test_reconfigure_declined_confirmation_does_not_write():
+    from kalico_monitor.setup import defaults
+
+    current = defaults()
+    current["HERMES_WEBHOOK_SECRET"] = "x" * 64
+    answers = iter(["2", "PEEK-02", "11", "n", "0"])
+    assert bootstrap.reconfigure_menu(
+        current, ask=lambda _="": next(answers), out=lambda _line: None) is None
+    assert current["KALICO_PRINTER_NAME"] == "PEEK-01"
+
+
+def test_reconfigure_updates_selected_field_only():
+    from kalico_monitor.setup import defaults
+
+    current = defaults()
+    current["HERMES_WEBHOOK_SECRET"] = "x" * 64
+    current["KALICO_EVENT_MODES"] = "klippy_shutdown=both,paused=agent"
+    answers = iter(["1", "http://192.168.1.101:7125", "11", "y"])
+    changes = bootstrap.reconfigure_menu(
+        current, ask=lambda _="": next(answers), out=lambda _line: None)
+    assert changes == {"MOONRAKER_URL": "http://192.168.1.101:7125"}
