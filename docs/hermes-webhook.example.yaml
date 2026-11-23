@@ -28,6 +28,8 @@ platforms:
           signature: generic
           deliver: feishu
           deliver_only: false
+          # Limited to the plugin's read-only diagnostic tools.
+          toolsets: [kalico_monitor]
           deliver_extra:
             chat_id: "REPLACE_WITH_FEISHU_GROUP_CHAT_ID"
           prompt: |
