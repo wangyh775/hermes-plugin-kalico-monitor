@@ -25,7 +25,7 @@ bash install.sh --moonraker-url http://192.168.1.100:7125 --printer PEEK-01 --mo
 1. 验证 Python、Hermes CLI 和 systemd；使用 `.venv` 安装依赖。
 2. 加载 Hermes `config.yaml`，通过可保留注释的 YAML 解析器**仅合并 Webhook 路由**；保留已有模型、飞书及其他路由。若同名路由并非 Kalico Monitor 创建，拒绝覆盖。
 3. 生成或复用 HMAC Secret，将其同时写入 Monitor `monitor.env` 和两条 Hermes 路由；文件写入采用原子替换，旧文件备份为带时间戳的 `.bak.*` 文件并设置权限 `0600`。
-4. 自动运行 `hermes plugins install "file://<项目路径>" --enable`，重启 Gateway 使配置生效。安装器可能中断当前 Gateway 会话，请选择空闲时段安装。
+4. 通过当前终端执行 Hermes 原生权限确认，再运行 `hermes plugins install "file://<项目路径>" --enable`，重启 Gateway 使配置生效。安装器可能中断当前 Gateway 会话，请选择空闲时段安装。
 5. 创建并启用 `~/.config/systemd/user/kalico-monitor.service`，自动启动 Monitor。
 6. 检查 Moonraker `/server/info`、Hermes Webhook `/health`，并向飞书发送一条安全的 `installation_test` 通知。只有 Hermes 确认直接投递成功，才认为通知链路验收通过。
 
@@ -51,6 +51,16 @@ hermes gateway status
 
 已安装后使用 `bash install.sh --reconfigure`；也可以使用 `.venv/bin/python -m kalico_monitor.bootstrap --reconfigure`，无需重新注册 Hermes 插件。向导默认读取原有设置，修改时按回车保留，只有明确选择确认才应用；选择取消不会写入磁盘。支持逐项修改打印机 IP / 名称 / API Key、喷嘴力开关、进度报告、停滞与断连阈值、可选会话限制及事件策略。
 
-菜单 **10** 可直接调整两种关键故障的 `direct / agent / both`，不会覆盖打印完成、暂停等其他事件的独立配置。保存前展示脱敏变更摘要；保存时自动备份原配置，安全更新 Monitor 和 Hermes 路由、重新加载 Gateway 与 systemd 用户服务，并复测连接和测试通知。若校验或部署出错，尝试恢复原文件及服务；实际已发出的通知和插件外部副作用无法自动撤销。
+菜单 **10** 可直接调整两种关键故障的 `direct / agent / both`，不会覆盖打印完成、暂停等其他事件的独立配置。保存前展示脱敏变更摘要；保存时自动备份原配置，只更新必要字段；**仅在 Hermes 路由或插件确实变化时重启 Gateway**，普通 Moonraker 地址等本地配置修改不会重启 Hermes。Monitor 用户服务重新加载后会复测连接和测试通知。若校验或部署出错，尝试恢复原文件及服务；实际已发出的通知和插件外部副作用无法自动撤销。
 
 `--reconfigure --skip-checks` 可跳过连通性验证，仅用于离线排查，不代表已成功投递。配置 Hermes 的飞书账户或大模型仍使用 Hermes 自身的管理工具。
+
+
+## Review 修复后的行为说明
+
+- **故障优先通知**：`both` 模式会独立持久化 direct 与 agent 支路。即使未配置 Agent 地址，也先投递普通告警；分析任务在 SQLite 中保留并按退避策略重试。
+- **重新配置一致性**：Hermes 插件优先读取同用户的 Monitor 共享 `monitor.env`；只有文件未定义字段时才回退到 Hermes Secret / 进程环境，防止旧地址覆盖新 Moonraker IP。配置路径不一致时应设置 `KALICO_MONITOR_ENV_FILE`。
+- **飞书目标**：已有 `kalico-alert` / `kalico-analysis` 的 `deliver_extra.chat_id` 不会因为 Hermes Home Channel 改变而被覆盖。要主动更改通知目标，可在安装命令中使用 `--chat-id oc_新目标`，其他 `deliver_extra` 参数保留。
+- **插件安装**：Hermes 原生权限确认在终端显示，不再把交互输入隐藏到 subprocess PIPE。网关如需优雅退出，不再受通用 90 秒命令超时中断；应在空闲时执行首次安装。
+- **Agent 只读工具**：仅给 Agent Webhook 开启 `kalico_monitor` 工具集，允许使用插件提供的只读状态/力/健康查询，不授予终端、文件写入或打印机控制工具。
+- **失败恢复**：除了旧配置快照，还会尽量恢复原有 systemd 启用/停用状态，重新加载服务与 Gateway。已经发送的飞书通知和新安装的第三方插件无法保证回滚；建议初次安装前人工备份整个 `~/.hermes`。
