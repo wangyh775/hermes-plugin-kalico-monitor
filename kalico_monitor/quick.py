@@ -66,13 +66,17 @@ def database_path(get_secret: Callable[[str], str] | None = None) -> Path:
 
 def is_allowed(platform: str = "", source: Any = None,
                get_secret: Callable[[str], str] | None = None) -> bool:
-    """Nonlocal gateways are denied unless the chat id is explicitly allowed."""
+    """Hermes authorizes inbound commands; optional chat IDs add a second restriction."""
     if platform in LOCAL_PLATFORMS and source is None:
         return True
+    if not platform:
+        return False
     chat_id = (source.get("chat_id") if isinstance(source, dict)
                else getattr(source, "chat_id", None))
     allowed = {item.strip() for item in setting("KALICO_ALLOWED_CHAT_IDS", get_secret).split(",")
                if item.strip()}
+    if not allowed:
+        return True
     return bool(chat_id and str(chat_id) in allowed)
 
 
