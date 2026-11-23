@@ -13,7 +13,7 @@ def test_generic_v2_signature_and_stable_delivery_id():
     expected = hmac.new(b"shared-secret", b"1700000001." + body, hashlib.sha256).hexdigest()
     assert headers["X-Webhook-Signature-V2"] == expected
     assert headers["X-Webhook-Timestamp"] == "1700000001"
-    assert headers["X-Request-ID"] == "d7bc"
+    assert headers["X-Request-ID"] == "d7bc:direct"
     assert json.loads(body)["printer"] == "PEEK-01"
 
 
