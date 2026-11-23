@@ -44,6 +44,16 @@ bash install.sh
 
 向导会配置 Moonraker、自动合并 Hermes Webhook、安装插件、管理 systemd，并使用安全的测试通知验证飞书通道。默认 `PEEK-01` 与关键故障 `both`；具体权限前提、备份、回滚和限制见 [Linux 一键安装](docs/ONE_CLICK_INSTALL.zh-CN.md)。
 
+## 已安装后的二次交互配置
+
+无需重新安装 Hermes 插件，直接在仓库目录执行：
+
+```bash
+bash install.sh --reconfigure
+```
+
+向导读取当前 `monitor.env`，展示已有值并允许逐项修改 Moonraker 地址、打印机名称、API Key、喷嘴力开关、报告周期、停滞检测、断线阈值、事件路由及可选聊天限制。也可以只更改 `klippy_shutdown` / `nozzle_force_anomaly` 的 `direct/agent/both` 模式，其他事件规则会保留。按回车保留原值，选择取消不会修改文件；提交后自动备份、同步 Hermes 路由及重启服务，并重新测试连通性。修改飞书与大模型本身仍由 Hermes 负责。详见 [Linux 安装与重配置](docs/ONE_CLICK_INSTALL.zh-CN.md)。
+
 ## 手动安装（Linux）
 
 ```bash
