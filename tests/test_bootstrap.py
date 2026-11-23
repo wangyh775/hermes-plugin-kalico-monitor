@@ -3,9 +3,6 @@ from __future__ import annotations
 
 import io
 import json
-from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 
@@ -111,7 +108,7 @@ def test_synthetic_delivery_signature(monkeypatch):
     monkeypatch.setattr(bootstrap.urllib.request, "build_opener", lambda *args: Opener())
     bootstrap.test_direct_delivery(8644, "secret", "PEEK-01")
     assert received["body"]["kind"] == "installation_test"
-    assert "X-webhook-signature-v2" in {
+    assert "x-webhook-signature-v2" in {
         key.lower(): value for key, value in received["headers"].items()
     }
 
