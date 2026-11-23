@@ -99,13 +99,16 @@ class Monitor:
         while True:
             for item in self.store.unrouted(limit=30):
                 routes = routes_for(item["kind"], self.event_modes)
-                if "agent" in routes and not self.settings.hermes_agent_url:
-                    LOG.error("Agent routing requires HERMES_AGENT_WEBHOOK_URL")
-                    continue
+                # Persist both tasks even when the analysis endpoint is absent.
+                # The direct alert must never depend on Agent configuration.
                 self.store.ensure_routes(item["id"], routes)
             for item in self.store.pending_routes(limit=12):
                 route = item["route"]
                 url = self.settings.hermes_agent_url if route == "agent" else self.settings.hermes_url
+                if not url:
+                    self.store.route_failed(item["id"], route, "Webhook route is not configured")
+                    LOG.warning("notification %s route is not configured: %s", route, item["id"])
+                    continue
                 try:
                     await deliver(session, url, self.settings.hermes_secret,
                                   self.settings.printer, item, route=route)
