@@ -117,9 +117,10 @@ def plan_routes(config: dict, secret: str, chat: str) -> tuple[dict, int]:
         route = {
             "secret": secret, "signature": "generic", "deliver": "feishu",
             "deliver_only": key == "kalico-alert",
-            "deliver_extra": {"chat_id": chat},
             "prompt": prompt,
         }
+        if chat:
+            route["deliver_extra"] = {"chat_id": chat}
         if key == "kalico-analysis":
             # An empty toolset prevents event data from granting host command access.
             route["toolsets"] = []
@@ -229,8 +230,8 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
     )
     config = load_hermes(config_path)
     chat = home_chat(hermes_home, config, chat_id)
-    if not chat:
-        raise ValueError("Feishu home chat is unset. Run /set-home in Feishu or provide --chat-id.")
+    # Hermes uses the platform home channel when deliver_extra.chat_id is absent.
+    # This supports an already configured Feishu bot without an extra prompt.
     config, port = plan_routes(config, raw, chat)
     previous["HERMES_WEBHOOK_URL"] = f"http://127.0.0.1:{port}/webhooks/kalico-alert"
     previous["HERMES_AGENT_WEBHOOK_URL"] = (
@@ -241,6 +242,9 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
         check_moonraker(moonraker_url, previous.get("MOONRAKER_API_KEY", ""))
     unit = Path.home() / ".config/systemd/user/kalico-monitor.service"
     targets = [config_path, env_path] + ([unit] if manage_service else [])
+    for target in targets:
+        if target.is_symlink():
+            raise ValueError(f"Refusing to update symbolic link: {target}")
     originals = {p: p.read_bytes() if p.exists() else None for p in targets}
     backups: list[Path] = []
     touched: list[Path] = []
@@ -262,7 +266,7 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
             touched.append(unit)
         # Plugin installation may prompt for Hermes capability consent.
         run(["hermes", "plugins", "install", "file://" + str(root), "--enable"])
-        run(["hermes", "gateway", "restart"])
+        run(["hermes", "gateway", "restart", "--yes"])
         if manage_service:
             run(["systemctl", "--user", "daemon-reload"])
             run(["systemctl", "--user", "enable", "--now", "kalico-monitor"])
@@ -300,10 +304,6 @@ def main(argv: list[str] | None = None) -> None:
     if not moonraker:
         moonraker = input("Moonraker URL [http://192.168.1.100:7125]: ").strip() or (
             "http://192.168.1.100:7125")
-    if not args.chat_id:
-        config = load_hermes(config_path)
-        if not home_chat(hermes_home, config):
-            args.chat_id = input("飞书通知会话 ID（oc_...；可在飞书先执行 /set-home）：").strip()
     print("将安全备份现有 Hermes / Monitor / systemd 配置并注册 Kalico 路由。")
     print(f"打印机 {args.printer} | Moonraker {moonraker} | 关键故障模式 {args.mode}")
     if input("确认执行安装？[y/N]：").strip().lower() not in ("y", "yes"):
