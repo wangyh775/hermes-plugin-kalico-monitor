@@ -102,7 +102,8 @@ def home_chat(hermes_home: Path, config: dict, override: str = "") -> str:
     return chat
 
 
-def plan_routes(config: dict, secret: str, chat: str) -> tuple[dict, int]:
+def plan_routes(config: dict, secret: str, chat: str, *,
+                replace_chat: bool = False) -> tuple[dict, int]:
     platforms = config.setdefault("platforms", {})
     if not isinstance(platforms, dict):
         raise ValueError("platforms must be a mapping")
@@ -135,6 +136,12 @@ def plan_routes(config: dict, secret: str, chat: str) -> tuple[dict, int]:
         })
         if chat and (existing is None or "deliver_extra" not in route):
             route["deliver_extra"] = {"chat_id": chat}
+        elif chat and replace_chat:
+            target = route.get("deliver_extra")
+            if not isinstance(target, dict):
+                target = {}
+            target["chat_id"] = chat
+            route["deliver_extra"] = target
         if key == "kalico-analysis":
             # This plugin's toolset consists exclusively of read-only queries.
             route["toolsets"] = ["kalico_monitor"]
@@ -274,7 +281,7 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
     chat = home_chat(hermes_home, config, chat_id)
     # Hermes uses the platform home channel when deliver_extra.chat_id is absent.
     # This supports an already configured Feishu bot without an extra prompt.
-    config, port = plan_routes(config, raw, chat)
+    config, port = plan_routes(config, raw, chat, replace_chat=bool(chat_id))
     after_stream = io.StringIO()
     yaml_editor().dump(config, after_stream)
     hermes_changed = before_hermes != after_stream.getvalue()
@@ -304,7 +311,12 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
     touched: list[Path] = []
     gateway_restarted = False
     was_active = False
+    was_enabled = False
     if manage_service:
+        was_enabled = (subprocess.run(
+            ["systemctl", "--user", "is-enabled", "--quiet", "kalico-monitor"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=False).returncode == 0)
         was_active = (subprocess.run(
             ["systemctl", "--user", "is-active", "--quiet", "kalico-monitor"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -352,9 +364,9 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
             if not was_active:
                 subprocess.run(["systemctl", "--user", "stop", "kalico-monitor"],
                                check=False, stdout=subprocess.DEVNULL)
-                if originals[unit] is None:
-                    subprocess.run(["systemctl", "--user", "disable", "kalico-monitor"],
-                                   check=False, stdout=subprocess.DEVNULL)
+            if not was_enabled:
+                subprocess.run(["systemctl", "--user", "disable", "kalico-monitor"],
+                               check=False, stdout=subprocess.DEVNULL)
             subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
             if was_active:
                 subprocess.run(["systemctl", "--user", "restart", "kalico-monitor"],
