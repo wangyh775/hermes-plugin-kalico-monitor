@@ -125,8 +125,6 @@ def plan_routes(config: dict, secret: str, chat: str) -> tuple[dict, int]:
         if key == "kalico-analysis":
             # An empty toolset prevents event data from granting host command access.
             route["toolsets"] = []
-        if key == "kalico-alert":
-            route["mirror_to_session"] = True
         routes[key] = route
     webhook["enabled"] = True
     extra.setdefault("host", "127.0.0.1")
@@ -272,6 +270,13 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
     originals = {p: p.read_bytes() if p.exists() else None for p in targets}
     backups: list[Path] = []
     touched: list[Path] = []
+    gateway_restarted = False
+    was_active = False
+    if manage_service:
+        was_active = (subprocess.run(
+            ["systemctl", "--user", "is-active", "--quiet", "kalico-monitor"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=False).returncode == 0)
     try:
         for path in targets:
             path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -291,6 +296,7 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
         # Plugin installation may prompt for Hermes capability consent.
         run(["hermes", "plugins", "install", "file://" + str(root), "--enable"])
         run(["hermes", "gateway", "restart", "--yes"])
+        gateway_restarted = True
         if manage_service:
             run(["systemctl", "--user", "daemon-reload"])
             run(["systemctl", "--user", "enable", "--now", "kalico-monitor"])
@@ -303,9 +309,22 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
         for path in reversed(touched):
             restore(path, originals[path])
         if manage_service and unit in touched:
+            # Keep an old service running if possible, but stop an incomplete new install.
+            if not was_active:
+                subprocess.run(["systemctl", "--user", "stop", "kalico-monitor"],
+                               check=False, stdout=subprocess.DEVNULL)
+                if originals[unit] is None:
+                    subprocess.run(["systemctl", "--user", "disable", "kalico-monitor"],
+                                   check=False, stdout=subprocess.DEVNULL)
             subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
-        # A plugin install or gateway restart is an external action: we do not
-        # automatically remove plugins or stop a preexisting gateway/service.
+            if was_active:
+                subprocess.run(["systemctl", "--user", "restart", "kalico-monitor"],
+                               check=False, stdout=subprocess.DEVNULL)
+        if gateway_restarted:
+            subprocess.run(["hermes", "gateway", "restart", "--yes"], check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # The Hermes plugin installation and a sent notification remain external
+        # side-effects and cannot be undone by restoring configuration files.
         raise
     return backups
 
