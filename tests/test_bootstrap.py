@@ -306,12 +306,12 @@ def test_rollback_restores_disabled_unit_and_config(tmp_path, monkeypatch):
     hermes = tmp_path / ".hermes"
     hermes.mkdir()
     cfg = hermes / "config.yaml"
-    cfg.write_text("platforms:\\n  feishu:\\n    enabled: true\\n")
+    cfg.write_text("platforms:\n  feishu:\n    enabled: true\n")
     env = tmp_path / "monitor.env"
-    env.write_text("HERMES_WEBHOOK_SECRET=previous-very-long-random-secret\\n")
+    env.write_text("HERMES_WEBHOOK_SECRET=previous-very-long-random-secret\n")
     unit = tmp_path / ".config/systemd/user/kalico-monitor.service"
     unit.parent.mkdir(parents=True)
-    unit.write_text("original unit contents\\n")
+    unit.write_text("original unit contents\n")
     before = {path: path.read_bytes() for path in (cfg, env, unit)}
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(bootstrap.platform, "system", lambda: "Linux")
