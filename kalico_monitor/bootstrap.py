@@ -14,7 +14,6 @@ import shutil
 import subprocess
 import tempfile
 import time
-import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -264,6 +263,8 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
     if test_connections:
         check_moonraker(moonraker_url, previous.get("MOONRAKER_API_KEY", ""))
     unit = Path.home() / ".config/systemd/user/kalico-monitor.service"
+    if any(" " in str(p) or "\\n" in str(p) for p in (root, env_path, unit)):
+        raise ValueError("systemd paths must not contain whitespace")
     targets = [config_path, env_path] + ([unit] if manage_service else [])
     for target in targets:
         if target.is_symlink():
