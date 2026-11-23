@@ -62,8 +62,8 @@ def test_settings_rejects_remote_plaintext_agent(monkeypatch, tmp_path):
 async def test_missing_agent_endpoint_does_not_block_direct_notification(
     tmp_path, monkeypatch
 ):
-    from kalico_monitor.monitor import Monitor
     import kalico_monitor.monitor as monitor_module
+    from kalico_monitor.monitor import Monitor
 
     settings = Settings(
         printer="PEEK-01", moonraker_url="http://localhost:7125",
