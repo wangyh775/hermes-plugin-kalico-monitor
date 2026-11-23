@@ -34,7 +34,17 @@ Kalico + Moonraker --LAN HTTP/WS--> Kalico Monitor (systemd + SQLite)
 | `/kalico status/temp/force/alerts/health` 零 LLM 查询 | 已实现，需聊天白名单 |
 | 通用 `events.yaml` 规则引擎、多打印机聚合、AI 自动控制 | 尚未实现 |
 
-## 快速开始（Linux）
+## Linux 一键安装（推荐）
+
+如果 Hermes 已经完成飞书及模型配置，可使用一键安装入口：
+
+```bash
+bash install.sh
+```
+
+向导会配置 Moonraker、自动合并 Hermes Webhook、安装插件、管理 systemd，并使用安全的测试通知验证飞书通道。默认 `PEEK-01` 与关键故障 `both`；具体权限前提、备份、回滚和限制见 [Linux 一键安装](docs/ONE_CLICK_INSTALL.zh-CN.md)。
+
+## 手动安装（Linux）
 
 ```bash
 git clone https://github.com/wangyh775/hermes-plugin-kalico-monitor.git

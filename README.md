@@ -30,7 +30,17 @@ The printer and AI host may be separate machines on a mutually reachable LAN; th
 
 **Not implemented:** Generic per-event YAML rules, arbitrary event routing, multi-printer aggregation, remote printer control, and individual alerts for successful first-layer Z adjustments. The latest Kalico PR #13 supports first-layer Z adjustment, but this bridge currently alerts primarily when its `trigger_count` changes on a pause request.
 
-## Quick start
+## Linux one-click installer
+
+If Hermes is already configured with Feishu and an LLM, use the automated bootstrap:
+
+```bash
+bash install.sh
+```
+
+It prompts for the Moonraker URL, safely merges Hermes webhook routes without replacing existing Feishu/model settings, installs the Hermes plugin, manages the Monitor systemd user service, creates timestamped backups, and verifies the HTTP endpoints plus a harmless signed Feishu test notification. Default printer is `PEEK-01` and critical events use `both`. Full prerequisites, safeguards and limits: [Linux one-click guide](docs/ONE_CLICK_INSTALL.zh-CN.md). The feature is under review in PR #9 until merged.
+
+## Manual quick start
 
 ```bash
 git clone https://github.com/wangyh775/hermes-plugin-kalico-monitor.git
