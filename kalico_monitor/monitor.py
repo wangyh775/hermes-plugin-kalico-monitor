@@ -17,7 +17,7 @@ from .events import Alert, EventProcessor
 from .force import OBJECT as FORCE_OBJECT
 from .force import ForceEventTracker
 from .notifier import deliver
-from .policy import routes_for, parse_modes
+from .policy import parse_modes, routes_for
 from .reports import PeriodicReporter
 from .storage import Outbox
 
