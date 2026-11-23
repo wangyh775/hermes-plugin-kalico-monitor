@@ -18,7 +18,7 @@ KEYS = (
     "HERMES_WEBHOOK_URL", "HERMES_WEBHOOK_SECRET", "KALICO_MONITOR_DB",
     "KALICO_ALLOWED_CHAT_IDS", "KALICO_DISCONNECT_SECONDS",
     "KALICO_STALL_MINUTES", "KALICO_PROGRESS_REPORT_MINUTES",
-    "KALICO_WATCH_NOZZLE_FORCE",
+    "KALICO_WATCH_NOZZLE_FORCE", "HERMES_AGENT_WEBHOOK_URL", "KALICO_EVENT_MODES",
 )
 SECRET_KEYS = frozenset({"MOONRAKER_API_KEY", "HERMES_WEBHOOK_SECRET"})
 PLACEHOLDERS = frozenset({"GENERATE_A_LONG_RANDOM_SECRET", "INSECURE_NO_AUTH"})
@@ -26,7 +26,8 @@ GROUPS = {
     "1": ("打印机与 Moonraker", KEYS[:3]),
     "2": ("Hermes Webhook", KEYS[3:5]),
     "3": ("数据库与会话授权", KEYS[5:7]),
-    "4": ("监控与通知", KEYS[7:]),
+    "4": ("监控与通知", KEYS[7:11]),
+    "8": ("LLM 分析与事件策略", KEYS[11:]),
 }
 LABELS = {
     "KALICO_PRINTER_NAME": "打印机名称",
@@ -40,6 +41,8 @@ LABELS = {
     "KALICO_STALL_MINUTES": "停滞检测分钟数（0 关闭）",
     "KALICO_PROGRESS_REPORT_MINUTES": "定时报告分钟数（0 关闭，5–1440）",
     "KALICO_WATCH_NOZZLE_FORCE": "喷嘴力监控（0 关闭，1 开启）",
+    "HERMES_AGENT_WEBHOOK_URL": "Hermes Agent Webhook 地址（可选）",
+    "KALICO_EVENT_MODES": "事件策略（例如 klippy_shutdown=both,nozzle_force_anomaly=both）",
 }
 SAFE = re.compile(r"^[A-Za-z0-9_./:@%+,~=-]+$")
 CHAT_ID = re.compile(r"^[A-Za-z0-9_:@.\-]+$")
@@ -64,6 +67,8 @@ def defaults() -> dict[str, str]:
         "KALICO_STALL_MINUTES": "0",
         "KALICO_PROGRESS_REPORT_MINUTES": "0",
         "KALICO_WATCH_NOZZLE_FORCE": "0",
+        "HERMES_AGENT_WEBHOOK_URL": "",
+        "KALICO_EVENT_MODES": "",
     }
 
 
@@ -88,7 +93,9 @@ def validate_field(key: str, value: str) -> str:
     if any(c in value for c in ('"', "'", "\\", "$", chr(96))):
         raise ValueError("不能包含引号、反斜杠或命令替换符号")
     value = value.strip()
-    if key in {"MOONRAKER_URL", "HERMES_WEBHOOK_URL"}:
+    if key in {"MOONRAKER_URL", "HERMES_WEBHOOK_URL", "HERMES_AGENT_WEBHOOK_URL"}:
+        if key == "HERMES_AGENT_WEBHOOK_URL" and not value:
+            return ""
         url = urlsplit(value)
         if (url.scheme not in {"http", "https"} or not url.hostname
                 or url.username is not None or url.password is not None
@@ -100,13 +107,17 @@ def validate_field(key: str, value: str) -> str:
             raise ValueError("端口号无效") from exc
         if key == "MOONRAKER_URL" and url.path not in {"", "/"}:
             raise ValueError("Moonraker 地址不能包含路径")
-        if (key == "HERMES_WEBHOOK_URL" and url.scheme == "http"
+        if (key in {"HERMES_WEBHOOK_URL", "HERMES_AGENT_WEBHOOK_URL"} and url.scheme == "http"
                 and url.hostname not in {"127.0.0.1", "localhost", "::1"}):
             raise ValueError("非本机 Hermes Webhook 必须使用 HTTPS")
         return value.rstrip("/") if key == "MOONRAKER_URL" else value
     if key == "HERMES_WEBHOOK_SECRET":
         if not value or value in PLACEHOLDERS or len(value) < 16:
             raise ValueError("请输入至少 16 位真实密钥，或选择自动生成")
+    elif key == "KALICO_EVENT_MODES":
+        from .policy import parse_modes
+        parse_modes(value)
+        value = ",".join(x.strip() for x in value.split(",") if x.strip())
     elif key == "KALICO_PRINTER_NAME":
         if not value:
             raise ValueError("打印机名称不能为空")
@@ -255,6 +266,7 @@ def wizard(path: Path, ask=input, secret_ask=getpass.getpass, out=print) -> bool
     while True:
         out("\n[1] Moonraker    [2] Hermes Webhook")
         out("[3] 数据与授权    [4] 监控与通知")
+        out("[8] LLM 分析与事件策略")
         out("[5] 查看摘要      [6] 测试 Moonraker")
         out("[7] 保存退出      [0] 放弃修改")
         choice = ask("请选择：").strip()
@@ -280,6 +292,9 @@ def wizard(path: Path, ask=input, secret_ask=getpass.getpass, out=print) -> bool
             show(values, out)
             if ask("确认写入？[y/N]：").strip().lower() not in {"y", "yes"}:
                 out("未写入，返回菜单。")
+                continue
+            if any(mode == "agent" or mode == "both" for kind, mode in __import__("kalico_monitor.policy", fromlist=["parse_modes"]).parse_modes(values["KALICO_EVENT_MODES"]).items()) and not values["HERMES_AGENT_WEBHOOK_URL"]:
+                out("启用 agent/both 时必须配置 Hermes Agent Webhook 地址。")
                 continue
             save_env(path, values)
             out(f"已保存：{path}（权限 0600）")
