@@ -1,12 +1,9 @@
 """Interactive config wizard: safety, persistence, defaults, and CLI routing."""
-import os
 import stat
 
 import pytest
 
-from kalico_monitor.setup import (
-    defaults, masked, read_env, save_env, validate_field, wizard,
-)
+from kalico_monitor.setup import defaults, masked, read_env, save_env, validate_field, wizard
 
 
 def valid():
