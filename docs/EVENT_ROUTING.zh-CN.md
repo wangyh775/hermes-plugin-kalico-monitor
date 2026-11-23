@@ -26,7 +26,7 @@ Agent 路由成功依据为 JSON `status=accepted` 或 `duplicate`，表示 Herm
 
 旧版 SQLite `alerts` 表保留，新增 `alert_routes` 表，无需手工迁移。第一次分发时按当时规则生成支路；已生成的任务不会因为后续策略调整而静默改变。已有已送达告警不会再投递。
 
-**安全约束**：Monitor 只读 Moonraker/本地状态，不发 G-code；Agent 提示词仅授予只读诊断能力。LLM 结果仅供辅助判断，不可直接参与加热、运动、堵头暂停等安全控制。若指定了 agent/both，先配置并验证 Hermes Agent 路由；否则事件保留在待处理队列，日志报告缺少地址。
+**安全约束**：Monitor 只读 Moonraker/本地状态，不发 G-code；Agent 提示词仅授予只读诊断能力。LLM 结果仅供辅助判断，不可直接参与加热、运动、堵头暂停等安全控制。若指定了 agent/both，先配置并验证 Hermes Agent 路由；如果 Agent 地址缺失，**普通 direct 告警仍会正常投递**，只有 agent 支路记录配置失败并退避重试；只有纯 agent 模式需要等待路由恢复。
 
 ## 验证
 
@@ -36,4 +36,4 @@ Agent 路由成功依据为 JSON `status=accepted` 或 `duplicate`，表示 Herm
 4. 在 Agent 暂时不可用时确认 direct 仍能投递，恢复后 agent 单独重试。
 5. 验证 Hermes 飞书准入与斜杠命令限制；不要把 `KALICO_ALLOWED_CHAT_IDS` 误当作 webhook 投递目标。
 
-**限制**：Hermes 的实际配置字段与版本兼容性应以部署实例为准。该版本并未自动修改 Hermes 配置，也未实现 Agent 完成回执跟踪。
+**限制**：Hermes 的实际配置字段与版本兼容性应以部署实例为准。一键安装与二次配置会安全合并 Hermes 的两条 Kalico 路由；仍未实现 Agent 任务完成回执跟踪。Agent 路由配置 `toolsets: [kalico_monitor]`，仅使用此插件的只读诊断工具。
