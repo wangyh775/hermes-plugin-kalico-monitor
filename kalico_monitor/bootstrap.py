@@ -20,7 +20,8 @@ from pathlib import Path
 from ruamel.yaml import YAML
 
 from .notifier import make_request
-from .setup import read_env, save_env, validate_all
+from .policy import parse_modes
+from .setup import LABELS, masked, read_env, save_env, validate_all, validate_field
 
 DIRECT_PROMPT = """【Kalico Monitor 告警】{printer}
 等级：{severity}
@@ -122,6 +123,8 @@ def plan_routes(config: dict, secret: str, chat: str) -> tuple[dict, int]:
         }
         if chat:
             route["deliver_extra"] = {"chat_id": chat}
+        elif existing is not None and existing.get("deliver_extra"):
+            route["deliver_extra"] = existing["deliver_extra"]
         if key == "kalico-analysis":
             # An empty toolset prevents event data from granting host command access.
             route["toolsets"] = []
@@ -227,7 +230,9 @@ def test_direct_delivery(port: int, secret: str, printer: str) -> None:
 
 def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
               mode: str, chat_id: str, env_path: Path, config_path: Path,
-              *, manage_service: bool = True, test_connections: bool = True) -> list[Path]:
+              *, manage_service: bool = True, test_connections: bool = True,
+              overrides: dict[str, str] | None = None,
+              install_plugin: bool = True) -> list[Path]:
     if platform.system() != "Linux":
         raise RuntimeError("One-click systemd installer currently supports Linux only")
     if mode not in MODES:
@@ -245,17 +250,22 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
         raw = secrets.token_hex(32)
     previous["HERMES_WEBHOOK_SECRET"] = raw
     previous["KALICO_ALLOWED_CHAT_IDS"] = previous.get("KALICO_ALLOWED_CHAT_IDS", "")
-    previous["KALICO_EVENT_MODES"] = (
-        f"klippy_shutdown={mode},nozzle_force_anomaly={mode}"
-    )
+    if overrides is None:
+        previous["KALICO_EVENT_MODES"] = (
+            f"klippy_shutdown={mode},nozzle_force_anomaly={mode}"
+        )
+    else:
+        previous.update(overrides)
     config = load_hermes(config_path)
     chat = home_chat(hermes_home, config, chat_id)
     # Hermes uses the platform home channel when deliver_extra.chat_id is absent.
     # This supports an already configured Feishu bot without an extra prompt.
     config, port = plan_routes(config, raw, chat)
     previous["HERMES_WEBHOOK_URL"] = f"http://127.0.0.1:{port}/webhooks/kalico-alert"
+    active_modes = parse_modes(previous["KALICO_EVENT_MODES"])
+    agent_required = any(v in {"agent", "both"} for v in active_modes.values())
     previous["HERMES_AGENT_WEBHOOK_URL"] = (
-        f"http://127.0.0.1:{port}/webhooks/kalico-analysis" if mode != "direct" else ""
+        f"http://127.0.0.1:{port}/webhooks/kalico-analysis" if agent_required else ""
     )
     validate_all(previous)
     if test_connections:
@@ -294,7 +304,8 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
             os.replace(temp, unit)
             touched.append(unit)
         # Plugin installation may prompt for Hermes capability consent.
-        run(["hermes", "plugins", "install", "file://" + str(root), "--enable"])
+        if install_plugin:
+            run(["hermes", "plugins", "install", "file://" + str(root), "--enable"])
         run(["hermes", "gateway", "restart", "--yes"])
         gateway_restarted = True
         if manage_service:
@@ -329,6 +340,78 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
     return backups
 
 
+EDITABLE = (
+    "MOONRAKER_URL", "KALICO_PRINTER_NAME", "MOONRAKER_API_KEY",
+    "KALICO_WATCH_NOZZLE_FORCE", "KALICO_PROGRESS_REPORT_MINUTES",
+    "KALICO_STALL_MINUTES", "KALICO_DISCONNECT_SECONDS",
+    "KALICO_EVENT_MODES", "KALICO_ALLOWED_CHAT_IDS",
+)
+
+
+def reconfigure_menu(values: dict[str, str], ask=input, out=print,
+                     secret_ask=None) -> dict[str, str] | None:
+    """Stage changes; cancel or declined confirmation never writes to disk."""
+    if secret_ask is None:
+        import getpass
+        secret_ask = getpass.getpass
+    pending = dict(values)
+    while True:
+        out("\nKalico Monitor 现有配置（回车保留原值）")
+        for index, key in enumerate(EDITABLE, 1):
+            out(f"[{index}] {LABELS[key]}: {masked(key, pending.get(key, ''))}")
+        out("[10] 关键故障策略（direct / agent / both）")
+        out("[11] 确认并保存   [0] 取消")
+        choice = ask("请选择：").strip()
+        if choice == "0":
+            return None
+        if choice == "10":
+            mode = ask("关键故障模式 [direct/agent/both]：").strip()
+            if mode not in MODES:
+                out("模式无效。")
+                continue
+            raw = {}
+            for pair in filter(None, (x.strip() for x in pending["KALICO_EVENT_MODES"].split(","))):
+                kind, old_mode = (x.strip() for x in pair.split("=", 1))
+                raw[kind] = old_mode
+            raw["klippy_shutdown"] = mode
+            raw["nozzle_force_anomaly"] = mode
+            pending["KALICO_EVENT_MODES"] = ",".join(
+                f"{key}={value}" for key, value in raw.items())
+            continue
+        if choice == "11":
+            try:
+                validate_all(pending)
+            except ValueError as exc:
+                out(f"配置校验失败：{exc}")
+                continue
+            changed = {key: pending[key] for key in EDITABLE
+                       if pending[key] != values.get(key)}
+            if not changed:
+                out("没有需要保存的变更。")
+                return None
+            out("即将应用：")
+            for key in changed:
+                out(f"  {LABELS[key]}: {masked(key, values.get(key, ''))} -> "
+                    f"{masked(key, changed[key])}")
+            if ask("确认备份并应用？[y/N]：").strip().lower() in {"y", "yes"}:
+                return changed
+            out("没有写入，继续编辑。")
+            continue
+        if not choice.isdecimal() or not 1 <= int(choice) <= len(EDITABLE):
+            out("无效选项。")
+            continue
+        key = EDITABLE[int(choice) - 1]
+        raw = (secret_ask("输入新密钥（回车保留，- 清除）：")
+               if key == "MOONRAKER_API_KEY"
+               else ask(f"{LABELS[key]} 新值（回车保留，- 清空）："))
+        if not raw.strip():
+            continue
+        try:
+            pending[key] = validate_field(key, "" if raw.strip() == "-" else raw.strip())
+        except ValueError as exc:
+            out(f"输入无效：{exc}")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Kalico Monitor + Hermes Linux one-click setup")
     parser.add_argument("--moonraker-url", default="")
@@ -339,16 +422,31 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--env-file", type=Path, default=Path("~/.config/kalico-monitor/monitor.env"))
     parser.add_argument("--no-service", action="store_true")
     parser.add_argument("--skip-checks", action="store_true")
+    parser.add_argument("--reconfigure", action="store_true",
+                        help="Interactively update the existing installation")
     args = parser.parse_args(argv)
     root = Path(__file__).resolve().parents[1]
     hermes_home = args.hermes_home.expanduser().resolve()
     config_path = hermes_home / "config.yaml"
     env_path = args.env_file.expanduser().resolve()
+    overrides = None
+    if args.reconfigure:
+        if not env_path.is_file():
+            parser.error("尚未找到安装配置，请先运行 bash install.sh")
+        current = read_env(env_path)
+        overrides = reconfigure_menu(current)
+        if overrides is None:
+            print("未修改配置。")
+            return
+        args.printer = overrides.get("KALICO_PRINTER_NAME", current["KALICO_PRINTER_NAME"])
+        args.moonraker_url = overrides.get("MOONRAKER_URL", current["MOONRAKER_URL"])
     moonraker = args.moonraker_url
     if not moonraker:
         moonraker = input("Moonraker URL [http://192.168.1.100:7125]: ").strip() or (
             "http://192.168.1.100:7125")
-    if not args.chat_id and not home_chat(hermes_home, load_hermes(config_path)):
+    if not args.reconfigure and not args.chat_id and not home_chat(
+        hermes_home, load_hermes(config_path)
+    ):
         args.chat_id = input(
             "未检测到飞书 Home Channel；输入通知群 ID（oc_...），"
             "或回车使用 Hermes 默认路由：").strip()
@@ -361,10 +459,12 @@ def main(argv: list[str] | None = None) -> None:
         backups = configure(root, hermes_home, moonraker, args.printer, args.mode,
                             args.chat_id, env_path, config_path,
                             manage_service=not args.no_service,
-                            test_connections=not args.skip_checks)
+                            test_connections=not args.skip_checks,
+                            overrides=overrides, install_plugin=not args.reconfigure)
     except Exception as exc:
         parser.exit(1, f"安装或验证失败：{exc}\n配置已尽可能恢复；检查 Hermes 和 systemd 状态。\n")
-    print("安装成功；已注册 Hermes 插件、Webhook，并启动 Monitor 服务。")
+    print("重新配置已应用并完成服务同步。" if args.reconfigure else
+          "安装成功；已注册 Hermes 插件、Webhook，并启动 Monitor 服务。")
     print("配置备份：" + (", ".join(str(p) for p in backups) if backups else "首次安装无旧文件"))
     if args.skip_checks:
         print("已跳过网络及飞书连通性检查；请手动验收。")

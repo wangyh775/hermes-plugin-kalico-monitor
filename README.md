@@ -43,6 +43,10 @@ bash install.sh
 
 It prompts for the Moonraker URL, safely merges Hermes webhook routes without replacing existing Feishu/model settings, installs the Hermes plugin, manages the Monitor systemd user service, creates timestamped backups, and verifies the HTTP endpoints plus a harmless signed Feishu test notification. Default printer is `PEEK-01` and critical events use `both`. Full prerequisites, safeguards and limits: [Linux one-click guide](docs/ONE_CLICK_INSTALL.zh-CN.md). The feature is under review in PR #9 until merged.
 
+## Reconfigure an existing installation
+
+Run `bash install.sh --reconfigure` to interactively edit the existing Moonraker URL, printer name, status-report intervals, monitoring flags, optional chat restrictions and per-event routing. Existing values are preloaded; Enter preserves them, Cancel makes no changes, and only confirmed changes are applied. The installer backs up the old files, safely updates Hermes integration, restarts the relevant services and repeats connectivity checks. It does not reinstall the Hermes plugin in this mode.
+
 ## Manual quick start
 
 ```bash
