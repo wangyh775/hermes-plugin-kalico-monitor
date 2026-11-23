@@ -10,7 +10,7 @@ from typing import Any
 import aiohttp
 
 
-def make_request(alert: dict, secret: str, printer: str, timestamp: int | None = None) -> tuple[bytes, dict[str, str]]:
+def make_request(alert: dict, secret: str, printer: str, timestamp: int | None = None, route: str = "direct") -> tuple[bytes, dict[str, str]]:
     if timestamp is None:
         timestamp = int(time.time())
     body = json.dumps({
@@ -28,18 +28,19 @@ def make_request(alert: dict, secret: str, printer: str, timestamp: int | None =
         "Content-Type": "application/json",
         "X-Webhook-Timestamp": str(timestamp),
         "X-Webhook-Signature-V2": signature,
-        "X-Request-ID": alert["id"],
+        "X-Request-ID": alert["id"] + (":agent" if route == "agent" else ":direct"),
     }
 
 
 async def deliver(session: aiohttp.ClientSession, url: str, secret: str,
-                  printer: str, alert: dict) -> dict[str, Any]:
-    body, headers = make_request(alert, secret, printer)
+                  printer: str, alert: dict, route: str = "direct") -> dict[str, Any]:
+    body, headers = make_request(alert, secret, printer, route=route)
     async with session.post(url, data=body, headers=headers,
                             timeout=aiohttp.ClientTimeout(total=15)) as response:
         response.raise_for_status()
         result = await response.json()
-    if not isinstance(result, dict) or result.get("status") not in {"delivered", "duplicate"}:
+    accepted = {"accepted", "duplicate"} if route == "agent" else {"delivered", "duplicate"}
+    if not isinstance(result, dict) or result.get("status") not in accepted:
         status = result.get("status") if isinstance(result, dict) else type(result).__name__
         raise ValueError(f"Webhook did not confirm delivery: {status}")
     return result
