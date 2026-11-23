@@ -2,7 +2,7 @@
 
 **Realtime, read-only Kalico/Klipper monitoring and Hermes notifications.**
 
-[中文说明](README.zh-CN.md) · [Chinese deployment guide](docs/INSTALL.zh-CN.md) · [Configuration](docs/CONFIGURATION.zh-CN.md) · [Events](docs/EVENTS.zh-CN.md) · [Troubleshooting](docs/TROUBLESHOOTING.zh-CN.md)
+[中文说明](README.zh-CN.md) · [Chinese deployment guide](docs/INSTALL.zh-CN.md) · [Configuration](docs/CONFIGURATION.zh-CN.md) · [Events](docs/EVENTS.zh-CN.md) · [Event routing](docs/EVENT_ROUTING.zh-CN.md) · [Troubleshooting](docs/TROUBLESHOOTING.zh-CN.md)
 
 **Status:** Experimental. The plugin manifest currently says v0.3.0 while Python packaging still says 0.2.0; no real printer-to-Hermes-to-Feishu end-to-end validation has been completed. This is not a safety system.
 
@@ -26,9 +26,12 @@ The printer and AI host may be separate machines on a mutually reachable LAN; th
 - Optional print-progress reports (`KALICO_PROGRESS_REPORT_MINUTES=30`; default 0/off).
 - Optional stall detection (`KALICO_STALL_MINUTES`; default 0/off).
 - Optional custom Kalico [PR #13](https://github.com/wangyh775/kalico/pull/13) nozzle-force anomaly bridge (`KALICO_WATCH_NOZZLE_FORCE=1`; default off).
-- Authorized zero-LLM `/kalico status`, `temp`, `force`, `alerts`, `health` and `help` slash commands, plus three read-only Agent tools.
+- Hermes-authorized zero-LLM `/kalico status`, `temp`, `force`, `alerts`, `health` and `help` slash commands, plus three read-only Agent tools.
 
-**Not implemented:** Generic per-event YAML rules, arbitrary event routing, multi-printer aggregation, remote printer control, and individual alerts for successful first-layer Z adjustments. The latest Kalico PR #13 supports first-layer Z adjustment, but this bridge currently alerts primarily when its `trigger_count` changes on a pause request.
+- Per-event `direct`, `agent`, or `both` delivery via `KALICO_EVENT_MODES`, with an optional second Hermes Agent webhook. Durable independent retry records in SQLite and route-specific idempotency IDs; the default remains `direct`.
+- Interactive `kalico-monitor config` wizard, including optional event policies in menu `8`, masked secrets, and read-only connectivity check.
+
+**Not implemented:** Generic conditional per-event YAML rules, multi-printer aggregation, remote printer control, and individual alerts for successful first-layer Z adjustments. The latest Kalico PR #13 supports first-layer Z adjustment, but this bridge currently alerts primarily when its `trigger_count` changes on a pause request.
 
 ## Linux one-click installer
 
@@ -53,7 +56,7 @@ bash scripts/setup-user-service.sh
 .venv/bin/kalico-monitor config  # interactive setup (or edit monitor.env manually)
 ```
 
-Set `MOONRAKER_URL`, `HERMES_WEBHOOK_SECRET`, `KALICO_MONITOR_DB`, and `KALICO_ALLOWED_CHAT_IDS`. Merge [the Hermes Webhook example](docs/hermes-webhook.example.yaml) into `~/.hermes/config.yaml`; do not overwrite existing platform configuration. The webhook route secret must match.
+Set `MOONRAKER_URL`, `HERMES_WEBHOOK_SECRET`, and `KALICO_MONITOR_DB`. `KALICO_ALLOWED_CHAT_IDS` is optional because Hermes Gateway handles inbound authorization. For model-assisted events also set `HERMES_AGENT_WEBHOOK_URL` and `KALICO_EVENT_MODES`. Merge [the Hermes Webhook example](docs/hermes-webhook.example.yaml) into `~/.hermes/config.yaml`; do not overwrite existing platform configuration. The webhook route secret must match for each enabled route. `agent` / `both` events require a configured `kalico-analysis` route. See the [event routing guide](docs/EVENT_ROUTING.zh-CN.md).
 
 ```bash
 hermes plugins install "file://$PWD" --enable
@@ -71,3 +74,7 @@ The setup script **does not start** the daemon or modify Hermes settings. Instal
 ```
 
 Tests are simulated; real Moonraker, Hermes Gateway and Feishu integration must still be validated. Independent thermal cutoffs, E-stop and power isolation are mandatory for high-temperature printers. See [NOTICE.md](NOTICE.md) for attribution.
+
+## Upgrade notes
+
+PR #7 (configuration wizard) and PR #8 (per-event Hermes routing) have been merged into `main`. Existing installs can update with `git pull`, reinstall using `.venv/bin/python -m pip install -e .`, then run `.venv/bin/kalico-monitor config` and restart the user service. The default remains zero-LLM direct delivery. GitHub CI passed on Python 3.10 and 3.12 with Ruff; real Gateway/Feishu end-to-end validation is still required. A `status=accepted` response acknowledges Agent task admission, not final analysis completion or Feishu delivery.

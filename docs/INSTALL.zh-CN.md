@@ -53,7 +53,7 @@ bash scripts/setup-user-service.sh
 # 只读测试 Moonraker HTTP：.venv/bin/kalico-monitor config --test
 ~~~
 
-向导分为 Moonraker、Hermes Webhook、数据库/聊天授权、监控策略四组；支持保留现有值、自动生成随机 Webhook Secret、原子写入并设置文件权限 0600。**不会修改 `~/.hermes/config.yaml`，也不会自动启动或重启服务**。如果生成了新 Secret，必须同步到 Hermes Webhook 路由的 `secret`；飞书目标 `chat_id` 仍在 Hermes 配置中单独设置。向导不保证飞书推送已成功，仍需按下文实测。
+向导提供 Moonraker、Hermes Webhook、数据库/聊天授权、监控策略以及 **[8] LLM 分析与事件策略** 五个配置分组；支持保留现有值、自动生成随机 Webhook Secret、原子写入并设置文件权限 0600。**不会修改 `~/.hermes/config.yaml`，也不会自动启动或重启服务**。如果生成了新 Secret，必须同步到 Hermes Webhook 路由的 `secret`；飞书目标 `chat_id` 仍在 Hermes 配置中单独设置。向导不保证飞书推送已成功，仍需按下文实测。
 
 如需手动编辑，仍可使用：
 
@@ -70,7 +70,9 @@ MOONRAKER_API_KEY=
 HERMES_WEBHOOK_URL=http://127.0.0.1:8644/webhooks/kalico-alert
 HERMES_WEBHOOK_SECRET=请替换为随机密钥
 KALICO_MONITOR_DB=/home/YOUR_USER/.local/state/kalico-monitor/alerts.sqlite3
-KALICO_ALLOWED_CHAT_IDS=oc_你的飞书群ID
+KALICO_ALLOWED_CHAT_IDS=
+HERMES_AGENT_WEBHOOK_URL=http://127.0.0.1:8644/webhooks/kalico-analysis
+KALICO_EVENT_MODES=klippy_shutdown=both,nozzle_force_anomaly=both
 KALICO_DISCONNECT_SECONDS=25
 KALICO_STALL_MINUTES=0
 KALICO_PROGRESS_REPORT_MINUTES=30
@@ -91,9 +93,9 @@ chmod 600 ~/.config/kalico-monitor/monitor.env
 1. 确保 Hermes Gateway 已安装并连接飞书机器人，机器人具备向目标群聊发消息的权限。
 2. 将 [Webhook 示例](hermes-webhook.example.yaml) **合并**到 `~/.hermes/config.yaml`，不要覆盖已有 `platforms`、飞书配置或其他路由。
 3. Webhook 路由名 `kalico-alert` 应与 `HERMES_WEBHOOK_URL` 的路径一致；路由 `secret` 与 `HERMES_WEBHOOK_SECRET` 完全一致；`deliver_extra.chat_id` 使用实际飞书群 ID。
-4. 配置 `deliver_only: true`，使常规告警不经过 LLM。Hermes Webhook 具体配置格式和签名兼容性**仍需以部署版本实测为准**，本仓库没有真实飞书端到端验收记录。
+4. 常规 `kalico-alert` 路由配置 `deliver_only: true`，使普通告警不经过 LLM。如启用 `agent`/`both`，还需要 `kalico-analysis` 路由（`deliver_only: false`），并使 `HERMES_AGENT_WEBHOOK_URL` 指向它。Hermes Webhook 具体配置格式和签名兼容性**仍需以部署版本实测为准**，本仓库没有真实飞书端到端验收记录。
 
-当前 Monitor 使用 HMAC-SHA256 签名，发送 `X-Webhook-Timestamp`、`X-Webhook-Signature-V2`、`X-Request-ID`。只有 Hermes 返回 JSON `status=delivered` 或 `duplicate` 才标记为成功；失败会在 SQLite 中排队重试。历史报告在恢复网络后可能补发。
+当前 Monitor 使用 HMAC-SHA256 签名，发送 `X-Webhook-Timestamp`、`X-Webhook-Signature-V2`、`X-Request-ID`。普通 `direct` 路由只有收到 JSON `status=delivered` 或 `duplicate` 才标记为成功；`agent` 路由收到 `accepted` 或 `duplicate` 时仅标记为已受理；失败会在 SQLite 中排队重试。历史报告在恢复网络后可能补发。
 
 ## 4. 安装 Hermes 只读插件
 
@@ -106,7 +108,7 @@ hermes plugins list
 
 插件注册 `/kalico` 命令和 `kalico_status`、`kalico_force`、`kalico_monitor_health` 三个只读工具。命令详情见 [事件与查询](EVENTS.zh-CN.md)。
 
-**权限与配置共享**：`/kalico` 需要 Hermes Gateway 提供可信的 `platform` 和 `source.chat_id` 上下文；远程聊天 ID 不在 `KALICO_ALLOWED_CHAT_IDS` 中时一律拒绝。插件优先读取 Hermes Secret / 进程环境，再读取 `KALICO_MONITOR_ENV_FILE` 指定的文件或默认 `~/.config/kalico-monitor/monitor.env`。因此推荐 Hermes 与 Monitor 同用户运行；若 Hermes 在容器或另一用户下运行，必须显式配置它能读取的路径、数据库访问权限和 Moonraker 地址。**仅在 Monitor 的 systemd 环境里设置变量，不代表 Hermes 进程自动获得这些变量。**
+**权限与配置共享**：`/kalico` 需要 Hermes Gateway 提供可信的 `platform` 和 `source.chat_id` 上下文；入站权限由 Hermes 自身的用户、群组及命令权限管理；只有显式配置了非空 `KALICO_ALLOWED_CHAT_IDS` 时，插件才进一步按 chat_id 拒绝不在列表中的会话。插件优先读取 Hermes Secret / 进程环境，再读取 `KALICO_MONITOR_ENV_FILE` 指定的文件或默认 `~/.config/kalico-monitor/monitor.env`。因此推荐 Hermes 与 Monitor 同用户运行；若 Hermes 在容器或另一用户下运行，必须显式配置它能读取的路径、数据库访问权限和 Moonraker 地址。**仅在 Monitor 的 systemd 环境里设置变量，不代表 Hermes 进程自动获得这些变量。**
 
 ## 5. 前台验证与启动
 
@@ -156,3 +158,21 @@ curl -fsS -X POST http://192.168.1.100:7125/printer/objects/query \
 建议依次验证：Moonraker HTTP 与 WebSocket 可访问、Hermes Gateway 运行、Monitor 服务持续心跳、授权聊天能执行只读查询、正常打印完成能投递消息、30 分钟状态报告（若启用）能收到、SQLite 无持续积压。自定义力监控应先用 `log` 模式标定；**不要为了测试通知而制造堵头、超温、撞床或 MCU Shutdown**。
 
 本项目不是安全系统；硬件过温保护、急停、电源切断和本地 Kalico 控制必须独立于 Hermes。更多排障方法见 [故障排查](TROUBLESHOOTING.zh-CN.md)。
+
+## 8. 既有部署升级与双路通知验收
+
+PR #7、#8 已合并到 `main`。既有安装先备份配置和数据库，更新仓库并重新安装 Python 包：
+
+~~~bash
+cp ~/.config/kalico-monitor/monitor.env ~/.config/kalico-monitor/monitor.env.bak
+# 在克隆的仓库目录执行
+git pull --ff-only
+.venv/bin/python -m pip install -e .
+.venv/bin/kalico-monitor config
+.venv/bin/kalico-monitor config --show
+systemctl --user restart kalico-monitor
+~~~
+
+交互向导只写 Monitor 本地环境文件，不会自动修改 `~/.hermes/config.yaml`、Secret 或飞书投递目标。需要手工合并 [Hermes Webhook 双路示例](hermes-webhook.example.yaml)，确认两个路由共享同一个 Secret，之后按部署方式重启 Hermes Gateway。开启 `both` 前先确认普通告警能发送，再用安全的模拟事件或独立测试环境验证 Agent 能受理请求；不要主动制造硬件故障。
+
+`agent` 返回 `accepted` 表示排队受理，不代表推理已成功或通知已送达。SQLite 使用 `alerts` + `alert_routes` 分别记录告警与投递分路；任何一路失败只重试该路。升级后的 CLI、Hub、Webhook 配置和投递语义详见 [事件路由](EVENT_ROUTING.zh-CN.md)。GitHub CI 已通过 Python 3.10、3.12 与 Ruff，但实机 Hermes/飞书链路仍未确认。
