@@ -44,7 +44,18 @@ bash scripts/setup-user-service.sh
 
 脚本创建 `.venv`、`~/.config/kalico-monitor/monitor.env`、`~/.config/systemd/user/kalico-monitor.service`，执行 `systemctl --user daemon-reload`，**不会自动启动服务、不会覆盖现有 monitor.env，也不会修改 Hermes 配置**。
 
-编辑配置文件：
+**推荐使用交互配置向导**（像 `hermes model` 一样逐项选择，隐藏密钥、校验输入）：
+
+~~~bash
+.venv/bin/kalico-monitor config
+# 也可以使用：.venv/bin/python -m kalico_monitor.monitor config
+# 脱敏查看当前配置：.venv/bin/kalico-monitor config --show
+# 只读测试 Moonraker HTTP：.venv/bin/kalico-monitor config --test
+~~~
+
+向导分为 Moonraker、Hermes Webhook、数据库/聊天授权、监控策略四组；支持保留现有值、自动生成随机 Webhook Secret、原子写入并设置文件权限 0600。**不会修改 `~/.hermes/config.yaml`，也不会自动启动或重启服务**。如果生成了新 Secret，必须同步到 Hermes Webhook 路由的 `secret`；飞书目标 `chat_id` 仍在 Hermes 配置中单独设置。向导不保证飞书推送已成功，仍需按下文实测。
+
+如需手动编辑，仍可使用：
 
 ~~~bash
 nano ~/.config/kalico-monitor/monitor.env

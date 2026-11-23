@@ -44,7 +44,8 @@ WantedBy=default.target
 UNIT
 systemctl --user daemon-reload
 printf '\nConfigured %s\n' "$UNIT_FILE"
-printf '1. Edit %s (Moonraker URL, secret, chat allowlist)\n' "$ENV_FILE"
+printf '1. Run interactive setup: %s/.venv/bin/kalico-monitor config\n' "$ROOT"
+printf '   Or edit manually: %s\n' "$ENV_FILE"
 printf '2. Configure Hermes Webhook route and install the Hermes plugin from file://%s\n' "$ROOT"
 printf '3. Then run: systemctl --user enable --now kalico-monitor\n'
 printf '4. Inspect: systemctl --user status kalico-monitor\n'
