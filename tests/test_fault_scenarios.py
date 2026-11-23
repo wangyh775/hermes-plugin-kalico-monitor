@@ -214,14 +214,14 @@ async def test_retry_webhook_preserves_id_and_pending_event(tmp_path):
             for _ in range(50):
                 await asyncio.sleep(0.01)
                 row = db.conn.execute(
-                    "SELECT attempts FROM alerts WHERE id=?", (event_id,),
+                    "SELECT attempts FROM alert_routes WHERE alert_id=? AND route='direct'", (event_id,),
                 ).fetchone()
                 if row["attempts"] >= 1:
                     break
             assert row["attempts"] >= 1
             assert db.summary()["pending"] == 1
             with db.conn:
-                db.conn.execute("UPDATE alerts SET next_retry=0 WHERE id=?", (event_id,))
+                db.conn.execute("UPDATE alert_routes SET next_retry=0 WHERE alert_id=? AND route='direct'", (event_id,))
             await asyncio.wait_for(second.wait(), timeout=4)
             for _ in range(50):
                 await asyncio.sleep(0.01)
@@ -230,7 +230,7 @@ async def test_retry_webhook_preserves_id_and_pending_event(tmp_path):
             sender.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await sender
-        assert received == [event_id, event_id]
+        assert received == [event_id + ":direct", event_id + ":direct"]
         assert db.summary()["pending"] == 0
         assert db.summary()["delivered"] == 1
     finally:
