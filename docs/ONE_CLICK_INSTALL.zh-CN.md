@@ -45,3 +45,12 @@ hermes gateway status
 `--skip-checks` 仅用于离线安装/测试，跳过远程验证，此时**不得视为已经开箱即用**；`--no-service` 不创建 systemd 单元。安装器不会向外网暴露 Hermes Webhook；Monitor 与 Hermes 建议同主机运行。如需从局域网访问 Moonraker，在 Moonraker 防火墙中只向可信主机开放。
 
 自动安装目前限定 Linux + systemd + Python 3.10+；不提供 Windows 系统服务。更详细的事件配置见 [EVENT_ROUTING.zh-CN.md](EVENT_ROUTING.zh-CN.md)。
+
+
+## 再次运行交互向导
+
+已安装后使用 `bash install.sh --reconfigure`；也可以使用 `.venv/bin/python -m kalico_monitor.bootstrap --reconfigure`，无需重新注册 Hermes 插件。向导默认读取原有设置，修改时按回车保留，只有明确选择确认才应用；选择取消不会写入磁盘。支持逐项修改打印机 IP / 名称 / API Key、喷嘴力开关、进度报告、停滞与断连阈值、可选会话限制及事件策略。
+
+菜单 **10** 可直接调整两种关键故障的 `direct / agent / both`，不会覆盖打印完成、暂停等其他事件的独立配置。保存前展示脱敏变更摘要；保存时自动备份原配置，安全更新 Monitor 和 Hermes 路由、重新加载 Gateway 与 systemd 用户服务，并复测连接和测试通知。若校验或部署出错，尝试恢复原文件及服务；实际已发出的通知和插件外部副作用无法自动撤销。
+
+`--reconfigure --skip-checks` 可跳过连通性验证，仅用于离线排查，不代表已成功投递。配置 Hermes 的飞书账户或大模型仍使用 Hermes 自身的管理工具。
