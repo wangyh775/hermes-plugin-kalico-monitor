@@ -22,3 +22,19 @@ platforms:
             文件：{filename}
             信息：{detail}
             ID：{alert_id}
+
+        kalico-analysis:
+          secret: "REPLACE_WITH_THE_SAME_LONG_RANDOM_SECRET"
+          signature: generic
+          deliver: feishu
+          deliver_only: false
+          deliver_extra:
+            chat_id: "REPLACE_WITH_FEISHU_GROUP_CHAT_ID"
+          prompt: |
+            请分析以下高温打印机事件，区分事实与推测，
+            只调用只读工具，不得控制打印机：
+            设备：{printer}
+            告警：{kind} / {severity}
+            文件：{filename}
+            详情：{detail}
+            事件ID：{alert_id}
