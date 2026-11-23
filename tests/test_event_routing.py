@@ -4,10 +4,10 @@ import time
 import pytest
 
 from kalico_monitor.config import Settings
-from kalico_monitor.policy import parse_modes, routes_for
-from kalico_monitor.storage import Outbox
 from kalico_monitor.events import Alert
 from kalico_monitor.notifier import make_request
+from kalico_monitor.policy import parse_modes, routes_for
+from kalico_monitor.storage import Outbox
 
 
 def test_policy_defaults_and_overrides():
