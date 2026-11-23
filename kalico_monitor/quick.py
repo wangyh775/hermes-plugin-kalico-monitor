@@ -45,6 +45,12 @@ def shared_config(path: str | Path | None = None) -> dict[str, str]:
 
 
 def setting(name: str, get_secret: Callable[[str], str] | None = None) -> str:
+    # The installer manages this shared file. A stale Hermes plugin secret or
+    # process environment must not silently redirect read-only commands to a
+    # different printer after --reconfigure.
+    shared = shared_config()
+    if name in CONFIG_KEYS and name in shared:
+        return shared[name]
     if get_secret:
         try:
             value = get_secret(name)
