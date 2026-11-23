@@ -348,6 +348,10 @@ def main(argv: list[str] | None = None) -> None:
     if not moonraker:
         moonraker = input("Moonraker URL [http://192.168.1.100:7125]: ").strip() or (
             "http://192.168.1.100:7125")
+    if not args.chat_id and not home_chat(hermes_home, load_hermes(config_path)):
+        args.chat_id = input(
+            "未检测到飞书 Home Channel；输入通知群 ID（oc_...），"
+            "或回车使用 Hermes 默认路由：").strip()
     print("将安全备份现有 Hermes / Monitor / systemd 配置并注册 Kalico 路由。")
     print(f"打印机 {args.printer} | Moonraker {moonraker} | 关键故障模式 {args.mode}")
     if input("确认执行安装？[y/N]：").strip().lower() not in ("y", "yes"):
