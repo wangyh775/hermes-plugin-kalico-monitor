@@ -123,6 +123,8 @@ def plan_routes(config: dict, secret: str, chat: str) -> tuple[dict, int]:
         }
         if chat:
             route["deliver_extra"] = {"chat_id": chat}
+        elif existing is not None and existing.get("deliver_extra"):
+            route["deliver_extra"] = existing["deliver_extra"]
         if key == "kalico-analysis":
             # An empty toolset prevents event data from granting host command access.
             route["toolsets"] = []
