@@ -21,7 +21,7 @@ optional_env:
     password: false
   - name: MOONRAKER_URL
     description: Optional override of the shared Moonraker URL
-    prompt: Moonraker URL (optional when shared config exists)
+    prompt: Moonraker URL (fallback when shared config does not define it)
     secret: false
     password: false
   - name: MOONRAKER_API_KEY
@@ -31,6 +31,6 @@ optional_env:
     password: true
   - name: KALICO_ALLOWED_CHAT_IDS
     description: Comma-separated IDs of chats permitted to use /kalico remotely
-    prompt: Allowed chat IDs (required for Feishu queries)
+    prompt: Optional additional chat allowlist (Hermes handles primary access)
     secret: false
     password: false
