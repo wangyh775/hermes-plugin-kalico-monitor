@@ -17,6 +17,7 @@ from .events import Alert, EventProcessor
 from .force import OBJECT as FORCE_OBJECT
 from .force import ForceEventTracker
 from .notifier import deliver
+from .policy import parse_modes, routes_for
 from .reports import PeriodicReporter
 from .storage import Outbox
 
@@ -40,6 +41,7 @@ QUERY = {"jsonrpc": "2.0", "method": "printer.objects.query",
 class Monitor:
     def __init__(self, settings: Settings, store: Outbox):
         self.settings = settings
+        self.event_modes = parse_modes(settings.event_modes)
         self.store = store
         self.last_store_at = 0.0
         self.last_heartbeat_at = float("-inf")
@@ -95,16 +97,25 @@ class Monitor:
 
     async def _dispatch(self, session: aiohttp.ClientSession):
         while True:
-            for item in self.store.pending(limit=12):
+            for item in self.store.unrouted(limit=30):
+                routes = routes_for(item["kind"], self.event_modes)
+                if "agent" in routes and not self.settings.hermes_agent_url:
+                    LOG.error("Agent routing requires HERMES_AGENT_WEBHOOK_URL")
+                    continue
+                self.store.ensure_routes(item["id"], routes)
+            for item in self.store.pending_routes(limit=12):
+                route = item["route"]
+                url = self.settings.hermes_agent_url if route == "agent" else self.settings.hermes_url
                 try:
-                    await deliver(session, self.settings.hermes_url,
-                                  self.settings.hermes_secret, self.settings.printer, item)
+                    await deliver(session, url, self.settings.hermes_secret,
+                                  self.settings.printer, item, route=route)
                 except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
-                    self.store.failed(item["id"], type(exc).__name__ + ": " + str(exc)[:100])
-                    LOG.warning("notification retry scheduled: %s", item["id"])
+                    self.store.route_failed(item["id"], route,
+                                            type(exc).__name__ + ": " + str(exc)[:100])
+                    LOG.warning("notification retry scheduled: %s (%s)", item["id"], route)
                 else:
-                    self.store.delivered(item["id"])
-                    LOG.info("notification delivered: %s", item["id"])
+                    self.store.route_delivered(item["id"], route)
+                    LOG.info("notification %s accepted: %s", route, item["id"])
             await asyncio.sleep(2)
 
     def _process_snapshot(self, processor: EventProcessor, snapshot: dict):

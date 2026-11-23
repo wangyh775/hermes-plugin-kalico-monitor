@@ -79,8 +79,8 @@ def test_shared_config_is_data_not_executable(tmp_path, monkeypatch):
 def test_gateway_without_verified_identity_is_denied(tmp_path, monkeypatch):
     monkeypatch.setenv("KALICO_MONITOR_ENV_FILE", str(tmp_path / "missing"))
     monkeypatch.delenv("KALICO_ALLOWED_CHAT_IDS", raising=False)
-    assert not is_allowed("feishu", {"chat_id": "oc_unknown"})
-    assert not is_allowed("feishu", None)
+    assert is_allowed("feishu", {"chat_id": "oc_unknown"})
+    assert is_allowed("feishu", None)
     assert not is_allowed("", None)
     assert is_allowed("cli", None)
     monkeypatch.setenv("KALICO_ALLOWED_CHAT_IDS", "oc_valid")

@@ -27,6 +27,13 @@ class Outbox:
             next_retry REAL NOT NULL DEFAULT 0, delivered REAL,
             last_error TEXT NOT NULL DEFAULT ''
         )""")
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS alert_routes (
+            alert_id TEXT NOT NULL, route TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0, next_retry REAL NOT NULL DEFAULT 0,
+            delivered REAL, last_error TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY(alert_id, route),
+            FOREIGN KEY(alert_id) REFERENCES alerts(id)
+        )""")
         self.conn.commit()
 
     def close(self):
@@ -73,6 +80,48 @@ class Outbox:
     def enqueue(self, alert: Alert) -> str:
         with self.conn:
             return self._insert(alert)
+
+    def unrouted(self, limit: int = 30) -> list[dict]:
+        rows = self.conn.execute("""SELECT a.* FROM alerts a WHERE NOT EXISTS
+            (SELECT 1 FROM alert_routes r WHERE r.alert_id=a.id)
+            AND a.delivered IS NULL ORDER BY a.created LIMIT ?""", (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def ensure_routes(self, alert_id: str, routes: tuple[str, ...]) -> None:
+        with self.conn:
+            for route in routes:
+                self.conn.execute("""INSERT OR IGNORE INTO alert_routes
+                    (alert_id,route,next_retry) VALUES (?,?,?)""",
+                                  (alert_id, route, time.time()))
+
+    def pending_routes(self, now: float | None = None, limit: int = 20) -> list[dict]:
+        now = time.time() if now is None else now
+        rows = self.conn.execute("""SELECT a.*,r.route FROM alert_routes r
+            JOIN alerts a ON a.id=r.alert_id WHERE r.delivered IS NULL
+            AND r.next_retry<=? ORDER BY a.created LIMIT ?""", (now, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+    def route_delivered(self, alert_id: str, route: str) -> None:
+        with self.conn:
+            self.conn.execute("""UPDATE alert_routes SET delivered=?,last_error=''
+                WHERE alert_id=? AND route=?""", (time.time(), alert_id, route))
+            outstanding = self.conn.execute("""SELECT COUNT(*) FROM alert_routes
+                WHERE alert_id=? AND delivered IS NULL""", (alert_id,)).fetchone()[0]
+            if outstanding == 0:
+                self.conn.execute("""UPDATE alerts SET delivered=?,last_error=''
+                    WHERE id=?""", (time.time(), alert_id))
+
+    def route_failed(self, alert_id: str, route: str, error: str) -> None:
+        row = self.conn.execute("""SELECT attempts FROM alert_routes
+            WHERE alert_id=? AND route=?""", (alert_id, route)).fetchone()
+        if not row:
+            return
+        attempts = int(row["attempts"]) + 1
+        delay = min(300, 2 ** min(attempts, 8))
+        with self.conn:
+            self.conn.execute("""UPDATE alert_routes SET attempts=?,next_retry=?,last_error=?
+                WHERE alert_id=? AND route=?""",
+                              (attempts, time.time() + delay, error[:240], alert_id, route))
 
     def pending(self, now: float | None = None, limit: int = 20) -> list[dict]:
         now = time.time() if now is None else now

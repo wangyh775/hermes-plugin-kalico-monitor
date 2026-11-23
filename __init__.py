@@ -53,7 +53,7 @@ def register(ctx) -> None:
     async def _slash(raw_args: str, *, platform: str = "", source=None, **_context) -> str:
         # Chat identity comes from Hermes gateway metadata, never raw arguments.
         if not is_allowed(platform, source, _secret):
-            return "无权查询：请将此飞书会话 ID 添加到 KALICO_ALLOWED_CHAT_IDS。"
+            return "无权查询：当前会话未通过可选的 KALICO_ALLOWED_CHAT_IDS 限制。"
         # Keep blocking Moonraker HTTP and SQLite outside Hermes gateway loop.
         return await asyncio.to_thread(execute, raw_args, get_secret=_secret)
 
