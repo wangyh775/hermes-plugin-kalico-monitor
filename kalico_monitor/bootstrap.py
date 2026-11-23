@@ -6,6 +6,7 @@ never edits their credentials, and never runs printer control commands.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import platform
 import secrets
@@ -19,6 +20,7 @@ from pathlib import Path
 
 from ruamel.yaml import YAML
 
+from .notifier import make_request
 from .setup import read_env, save_env, validate_all
 
 DIRECT_PROMPT = """【Kalico Monitor 告警】{printer}
@@ -205,6 +207,27 @@ def check_webhook_health(port: int) -> None:
             raise RuntimeError(f"Webhook health returned HTTP {response.status}")
 
 
+def test_direct_delivery(port: int, secret: str, printer: str) -> None:
+    """Send a harmless synthetic event; require Hermes's delivery acknowledgement."""
+    event = {
+        "id": "kalico-install-check-" + secrets.token_hex(10),
+        "kind": "installation_test",
+        "severity": "info",
+        "filename": "",
+        "detail": "Kalico Monitor 安装连通性测试（无需任何打印机动作）",
+        "created": time.time(),
+    }
+    body, headers = make_request(event, secret, printer)
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/webhooks/kalico-alert",
+        data=body, headers=headers, method="POST")
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(request, timeout=15) as response:
+        result = json.load(response)
+    if not isinstance(result, dict) or result.get("status") not in {"delivered", "duplicate"}:
+        raise RuntimeError("Hermes did not confirm delivery of the installation test")
+
+
 def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
               mode: str, chat_id: str, env_path: Path, config_path: Path,
               *, manage_service: bool = True, test_connections: bool = True) -> list[Path]:
@@ -274,6 +297,7 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
             run(["systemctl", "--user", "is-active", "--quiet", "kalico-monitor"])
         if test_connections:
             check_webhook_health(port)
+            test_direct_delivery(port, raw, printer)
     except Exception:
         for path in reversed(touched):
             restore(path, originals[path])
@@ -318,8 +342,11 @@ def main(argv: list[str] | None = None) -> None:
         parser.exit(1, f"安装或验证失败：{exc}\n配置已尽可能恢复；检查 Hermes 和 systemd 状态。\n")
     print("安装成功；已注册 Hermes 插件、Webhook，并启动 Monitor 服务。")
     print("配置备份：" + (", ".join(str(p) for p in backups) if backups else "首次安装无旧文件"))
-    print("Moonraker HTTP 和 Hermes Webhook /health 验证通过；")
-    print("飞书实际投递和 Agent 推理尚需通过真实事件单独验收。")
+    if args.skip_checks:
+        print("已跳过网络及飞书连通性检查；请手动验收。")
+    else:
+        print("Moonraker HTTP、Hermes Webhook /health 和飞书测试通知均已通过。")
+    print("Agent 推理和真实打印事件仍需在部署环境中单独验收。")
 
 
 if __name__ == "__main__":
