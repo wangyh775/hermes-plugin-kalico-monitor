@@ -1,4 +1,5 @@
 """Event routing and durable delivery tests."""
+import asyncio
 import time
 
 import pytest
@@ -55,3 +56,50 @@ def test_settings_rejects_remote_plaintext_agent(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_AGENT_WEBHOOK_URL", "http://192.168.0.4:8644/webhooks/kalico-analysis")
     with pytest.raises(ValueError):
         Settings.load()
+
+
+@pytest.mark.asyncio
+async def test_missing_agent_endpoint_does_not_block_direct_notification(
+    tmp_path, monkeypatch
+):
+    from kalico_monitor.monitor import Monitor
+    import kalico_monitor.monitor as monitor_module
+
+    settings = Settings(
+        printer="PEEK-01", moonraker_url="http://localhost:7125",
+        moonraker_api_key="", hermes_url="http://localhost:8644/webhooks/kalico-alert",
+        hermes_secret="secret", sqlite_path=tmp_path / "events.db",
+        disconnect_seconds=25, stall_minutes=0,
+        hermes_agent_url="", event_modes="klippy_shutdown=both",
+    )
+    store = Outbox(settings.sqlite_path, settings.printer)
+    alert_id = store.enqueue(Alert(kind="klippy_shutdown", generation=1, filename="",
+                                   severity="critical", detail="Shutdown"))
+    delivered = []
+
+    async def fake_deliver(_session, _url, _secret, _printer, _item, route="direct"):
+        delivered.append(route)
+        return {"status": "delivered"}
+
+    monkeypatch.setattr(monitor_module, "deliver", fake_deliver)
+    runner = asyncio.create_task(Monitor(settings, store)._dispatch(None))
+    try:
+        await asyncio.sleep(0.06)
+    finally:
+        runner.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await runner
+        store.close()
+    assert delivered == ["direct"]
+    db = Outbox(settings.sqlite_path, settings.printer)
+    try:
+        rows = db.conn.execute(
+            "SELECT route,delivered,attempts FROM alert_routes WHERE alert_id=?",
+            (alert_id,),
+        ).fetchall()
+        states = {r["route"]: r for r in rows}
+        assert states["direct"]["delivered"] is not None
+        assert states["agent"]["delivered"] is None
+        assert states["agent"]["attempts"] >= 1
+    finally:
+        db.close()
