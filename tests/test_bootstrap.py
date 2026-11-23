@@ -194,3 +194,20 @@ def test_reconfigure_updates_selected_field_only():
     changes = bootstrap.reconfigure_menu(
         current, ask=lambda _="": next(answers), out=lambda _line: None)
     assert changes == {"MOONRAKER_URL": "http://192.168.1.101:7125"}
+
+
+def test_reconfigure_preserves_existing_feishu_chat_target():
+    original = {"platforms": {"webhook": {"extra": {"routes": {
+        "kalico-alert": {
+            "prompt": bootstrap.DIRECT_PROMPT,
+            "deliver_extra": {"chat_id": "oc_prior"}
+        },
+        "kalico-analysis": {
+            "prompt": bootstrap.AGENT_PROMPT,
+            "deliver_extra": {"chat_id": "oc_prior"}
+        }
+    }}}}}
+    updated, _port = bootstrap.plan_routes(original, "x" * 64, "")
+    routes = updated["platforms"]["webhook"]["extra"]["routes"]
+    assert routes["kalico-alert"]["deliver_extra"]["chat_id"] == "oc_prior"
+    assert routes["kalico-analysis"]["deliver_extra"]["chat_id"] == "oc_prior"
