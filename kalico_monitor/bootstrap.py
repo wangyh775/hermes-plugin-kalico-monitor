@@ -43,9 +43,19 @@ ROUTES = {"kalico-alert": DIRECT_PROMPT, "kalico-analysis": AGENT_PROMPT}
 MODES = {"direct", "agent", "both"}
 
 
-def run(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess:
+def run(args: list[str], *, check: bool = True, interactive: bool = False,
+        timeout: int | None = 90) -> subprocess.CompletedProcess:
+    """Plugin permission prompts must be visible and connected to the terminal."""
+    if interactive:
+        return subprocess.run(args, check=check, timeout=timeout)
     return subprocess.run(args, check=check, text=True, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, timeout=90)
+                          stderr=subprocess.PIPE, timeout=timeout)
+
+
+def restart_gateway() -> None:
+    # Hermes may need time to drain active agent sessions before a safe restart.
+    # Do not terminate it after the generic 90-second command timeout.
+    run(["hermes", "gateway", "restart", "--yes"], timeout=None)
 
 
 def read_dotenv(path: Path) -> dict[str, str]:
@@ -116,18 +126,18 @@ def plan_routes(config: dict, secret: str, chat: str) -> tuple[dict, int]:
         if existing is not None:
             if not isinstance(existing, dict) or "Kalico Monitor" not in str(existing.get("prompt", "")):
                 raise ValueError(f"Route {key} already exists and was not created by this installer")
-        route = {
+        # Merge only fields managed by this project. Preserve custom route
+        # options and explicit delivery targets on subsequent runs.
+        route = existing if existing is not None else {}
+        route.update({
             "secret": secret, "signature": "generic", "deliver": "feishu",
-            "deliver_only": key == "kalico-alert",
-            "prompt": prompt,
-        }
-        if chat:
+            "deliver_only": key == "kalico-alert", "prompt": prompt,
+        })
+        if chat and (existing is None or "deliver_extra" not in route):
             route["deliver_extra"] = {"chat_id": chat}
-        elif existing is not None and existing.get("deliver_extra"):
-            route["deliver_extra"] = existing["deliver_extra"]
         if key == "kalico-analysis":
-            # An empty toolset prevents event data from granting host command access.
-            route["toolsets"] = []
+            # This plugin's toolset consists exclusively of read-only queries.
+            route["toolsets"] = ["kalico_monitor"]
         routes[key] = route
     webhook["enabled"] = True
     extra.setdefault("host", "127.0.0.1")
@@ -257,10 +267,17 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
     else:
         previous.update(overrides)
     config = load_hermes(config_path)
+    import io
+    before_stream = io.StringIO()
+    yaml_editor().dump(config, before_stream)
+    before_hermes = before_stream.getvalue()
     chat = home_chat(hermes_home, config, chat_id)
     # Hermes uses the platform home channel when deliver_extra.chat_id is absent.
     # This supports an already configured Feishu bot without an extra prompt.
     config, port = plan_routes(config, raw, chat)
+    after_stream = io.StringIO()
+    yaml_editor().dump(config, after_stream)
+    hermes_changed = before_hermes != after_stream.getvalue()
     previous["HERMES_WEBHOOK_URL"] = f"http://127.0.0.1:{port}/webhooks/kalico-alert"
     active_modes = parse_modes(previous["KALICO_EVENT_MODES"])
     agent_required = any(v in {"agent", "both"} for v in active_modes.values())
@@ -271,9 +288,14 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
     if test_connections:
         check_moonraker(moonraker_url, previous.get("MOONRAKER_API_KEY", ""))
     unit = Path.home() / ".config/systemd/user/kalico-monitor.service"
-    if any(" " in str(p) or "\\n" in str(p) for p in (root, env_path, unit)):
+    if any(" " in str(p) or "\n" in str(p) for p in (root, env_path, unit)):
         raise ValueError("systemd paths must not contain whitespace")
-    targets = [config_path, env_path] + ([unit] if manage_service else [])
+    target_unit = service_text(root, env_path) if manage_service else ""
+    unit_changed = manage_service and (
+        not unit.is_file() or unit.read_text(encoding="utf-8") != target_unit
+    )
+    targets = ([config_path] if hermes_changed else []) + [env_path] + (
+        [unit] if unit_changed else [])
     for target in targets:
         if target.is_symlink():
             raise ValueError(f"Refusing to update symbolic link: {target}")
@@ -293,25 +315,31 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
             snap = backup(path)
             if snap:
                 backups.append(snap)
-        atomic_write_yaml(config_path, config)
-        touched.append(config_path)
+        if hermes_changed:
+            atomic_write_yaml(config_path, config)
+            touched.append(config_path)
         save_env(env_path, previous)
         touched.append(env_path)
-        if manage_service:
+        if unit_changed:
             fd, temp = tempfile.mkstemp(prefix=".kalico-service-", dir=unit.parent)
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                stream.write(service_text(root, env_path))
+                stream.write(target_unit)
             os.replace(temp, unit)
             touched.append(unit)
-        # Plugin installation may prompt for Hermes capability consent.
         if install_plugin:
-            run(["hermes", "plugins", "install", "file://" + str(root), "--enable"])
-        run(["hermes", "gateway", "restart", "--yes"])
-        gateway_restarted = True
+            # Let Hermes ask permission in the user's terminal instead of
+            # swallowing prompts into PIPE and eventually timing out.
+            run(["hermes", "plugins", "install", "file://" + str(root), "--enable"],
+                interactive=True, timeout=None)
+        if hermes_changed or install_plugin:
+            gateway_restarted = True
+            restart_gateway()
         if manage_service:
-            run(["systemctl", "--user", "daemon-reload"])
+            if unit_changed:
+                run(["systemctl", "--user", "daemon-reload"])
             run(["systemctl", "--user", "enable", "--now", "kalico-monitor"])
-            run(["systemctl", "--user", "restart", "kalico-monitor"])
+            if was_active:
+                run(["systemctl", "--user", "restart", "kalico-monitor"])
             run(["systemctl", "--user", "is-active", "--quiet", "kalico-monitor"])
         if test_connections:
             check_webhook_health(port)
@@ -319,7 +347,7 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
     except Exception:
         for path in reversed(touched):
             restore(path, originals[path])
-        if manage_service and unit in touched:
+        if manage_service and (unit in touched or env_path in touched):
             # Keep an old service running if possible, but stop an incomplete new install.
             if not was_active:
                 subprocess.run(["systemctl", "--user", "stop", "kalico-monitor"],
@@ -332,8 +360,10 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
                 subprocess.run(["systemctl", "--user", "restart", "kalico-monitor"],
                                check=False, stdout=subprocess.DEVNULL)
         if gateway_restarted:
-            subprocess.run(["hermes", "gateway", "restart", "--yes"], check=False,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                restart_gateway()
+            except (subprocess.SubprocessError, OSError) as rollback_error:
+                print(f"警告：Hermes 恢复重启失败：{type(rollback_error).__name__}")
         # The Hermes plugin installation and a sent notification remain external
         # side-effects and cannot be undone by restoring configuration files.
         raise
