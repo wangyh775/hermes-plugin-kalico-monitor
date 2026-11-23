@@ -30,7 +30,7 @@ platforms:
     assert result["model"]["provider"] == "existing"
     assert result["platforms"]["webhook"]["extra"]["routes"]["existing"]["secret"] == "keep-me"
     assert "deliver_extra" not in result["platforms"]["webhook"]["extra"]["routes"]["kalico-alert"]
-    assert result["platforms"]["webhook"]["extra"]["routes"]["kalico-analysis"]["toolsets"] == []
+    assert result["platforms"]["webhook"]["extra"]["routes"]["kalico-analysis"]["toolsets"] == ["kalico_monitor"]
     assert result["platforms"]["webhook"]["extra"]["routes"]["kalico-alert"]["deliver_only"] is True
     result2, _ = bootstrap.plan_routes(result, "x" * 64, "")
     assert result2["model"]["provider"] == "existing"
@@ -211,3 +211,72 @@ def test_reconfigure_preserves_existing_feishu_chat_target():
     routes = updated["platforms"]["webhook"]["extra"]["routes"]
     assert routes["kalico-alert"]["deliver_extra"]["chat_id"] == "oc_prior"
     assert routes["kalico-analysis"]["deliver_extra"]["chat_id"] == "oc_prior"
+
+
+def test_existing_delivery_target_and_custom_fields_survive_home_channel():
+    original = {"platforms": {"webhook": {"extra": {"routes": {
+        "kalico-alert": {
+            "prompt": bootstrap.DIRECT_PROMPT,
+            "deliver_extra": {"chat_id": "oc_existing", "thread_id": "thread"},
+            "custom_delivery_option": "retain",
+        },
+        "kalico-analysis": {
+            "prompt": bootstrap.AGENT_PROMPT,
+            "deliver_extra": {"chat_id": "oc_existing"},
+            "max_turns": 3,
+        },
+    }}}}}
+    result, _ = bootstrap.plan_routes(original, "s" * 64, "oc_new_home")
+    routes = result["platforms"]["webhook"]["extra"]["routes"]
+    assert routes["kalico-alert"]["deliver_extra"] == {
+        "chat_id": "oc_existing", "thread_id": "thread"
+    }
+    assert routes["kalico-alert"]["custom_delivery_option"] == "retain"
+    assert routes["kalico-analysis"]["deliver_extra"]["chat_id"] == "oc_existing"
+    assert routes["kalico-analysis"]["max_turns"] == 3
+    assert routes["kalico-analysis"]["toolsets"] == ["kalico_monitor"]
+
+
+def test_reconfigure_only_moonraker_does_not_restart_hermes(tmp_path, monkeypatch):
+    from kalico_monitor.setup import defaults, save_env
+
+    root = tmp_path / "plugin"
+    root.mkdir()
+    hermes = tmp_path / "hermes"
+    hermes.mkdir()
+    cfg = hermes / "config.yaml"
+    config, _ = bootstrap.plan_routes({"platforms": {}}, "s" * 64, "")
+    bootstrap.atomic_write_yaml(cfg, config)
+    env = tmp_path / "monitor.env"
+    values = defaults()
+    values["HERMES_WEBHOOK_SECRET"] = "s" * 64
+    values["KALICO_EVENT_MODES"] = "klippy_shutdown=both,nozzle_force_anomaly=both"
+    save_env(env, values)
+    monkeypatch.setattr(bootstrap.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda _name: "/usr/bin/mock")
+    calls = []
+    monkeypatch.setattr(bootstrap, "run", lambda argv, **kwargs: calls.append(argv))
+    bootstrap.configure(
+        root, hermes, "http://192.168.1.101:7125", "PEEK-01", "both",
+        "", env, cfg, manage_service=False, test_connections=False,
+        overrides={"MOONRAKER_URL": "http://192.168.1.101:7125"},
+        install_plugin=False,
+    )
+    assert not calls, "Moonraker-only changes must not restart or reinstall Hermes"
+
+
+def test_plugin_install_keeps_permission_prompt_visible():
+    import subprocess
+
+    args = ["hermes", "plugins", "install", "file:///tmp/kalico", "--enable"]
+    with pytest.MonkeyPatch.context() as mp:
+        calls = []
+        def fake_run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return subprocess.CompletedProcess(argv, 0)
+        mp.setattr(bootstrap.subprocess, "run", fake_run)
+        bootstrap.run(args, interactive=True, timeout=None)
+    assert calls[0][0] == args
+    assert "stdout" not in calls[0][1]
+    assert "stderr" not in calls[0][1]
+    assert calls[0][1]["timeout"] is None
