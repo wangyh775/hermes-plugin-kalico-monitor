@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 MODES = frozenset({"direct", "agent", "both"})
-DEFAULTS = {"nozzle_force_anomaly": "both", "klippy_shutdown": "both"}
+DEFAULTS = {}
 
 
 def parse_modes(value: str) -> dict[str, str]:
