@@ -13,6 +13,8 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from .policy import parse_modes
+
 KEYS = (
     "KALICO_PRINTER_NAME", "MOONRAKER_URL", "MOONRAKER_API_KEY",
     "HERMES_WEBHOOK_URL", "HERMES_WEBHOOK_SECRET", "KALICO_MONITOR_DB",
@@ -115,7 +117,6 @@ def validate_field(key: str, value: str) -> str:
         if not value or value in PLACEHOLDERS or len(value) < 16:
             raise ValueError("请输入至少 16 位真实密钥，或选择自动生成")
     elif key == "KALICO_EVENT_MODES":
-        from .policy import parse_modes
         parse_modes(value)
         value = ",".join(x.strip() for x in value.split(",") if x.strip())
     elif key == "KALICO_PRINTER_NAME":
@@ -293,7 +294,7 @@ def wizard(path: Path, ask=input, secret_ask=getpass.getpass, out=print) -> bool
             if ask("确认写入？[y/N]：").strip().lower() not in {"y", "yes"}:
                 out("未写入，返回菜单。")
                 continue
-            if any(mode == "agent" or mode == "both" for kind, mode in __import__("kalico_monitor.policy", fromlist=["parse_modes"]).parse_modes(values["KALICO_EVENT_MODES"]).items()) and not values["HERMES_AGENT_WEBHOOK_URL"]:
+            if any(mode == "agent" or mode == "both" for kind, mode in parse_modes(values["KALICO_EVENT_MODES"]).items()) and not values["HERMES_AGENT_WEBHOOK_URL"]:
                 out("启用 agent/both 时必须配置 Hermes Agent Webhook 地址。")
                 continue
             save_env(path, values)
