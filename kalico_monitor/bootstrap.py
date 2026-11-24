@@ -290,10 +290,21 @@ def verify_notification_chain(port: int, secret: str, printer: str) -> list[str]
     A failing Gateway, webhook, or Feishu is outside the Monitor deployment's
     transaction. The Monitor retains queued alerts for later delivery.
     """
-    try:
-        check_webhook_health(port)
-    except (OSError, RuntimeError, ValueError) as exc:
-        return [str(exc) + "；已跳过飞书测试通知"]
+    # Gateway restart can return a temporary 502 while its upstream is
+    # reloading. Poll health, but never retry the POST test (which could
+    # duplicate a successfully accepted notification).
+    last_error: Exception | None = None
+    for attempt in range(5):
+        try:
+            check_webhook_health(port)
+            last_error = None
+            break
+        except (OSError, RuntimeError, ValueError) as exc:
+            last_error = exc
+            if attempt < 4:
+                time.sleep(1)
+    if last_error is not None:
+        return [str(last_error) + "；健康检查连续失败，已跳过飞书测试通知"]
     try:
         test_direct_delivery(port, secret, printer)
     except (OSError, RuntimeError, ValueError) as exc:
