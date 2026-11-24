@@ -10,8 +10,6 @@ import os
 import shutil
 import subprocess
 
-import pwd
-
 
 SERVICE = "kalico-monitor"
 
@@ -23,6 +21,8 @@ def _call(args: list[str], *, interactive: bool = False) -> subprocess.Completed
 
 def login_user() -> str:
     """Use the real invoking account, not an untrusted USER environment value."""
+    import pwd
+
     return pwd.getpwuid(os.getuid()).pw_name
 
 
