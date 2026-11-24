@@ -155,6 +155,8 @@ def test_bootstrap_only_enables_linger_after_success(
     calls = []
     monkeypatch.setattr("builtins.input", lambda _prompt="": "y" if confirmed else "n")
     monkeypatch.setattr(bootstrap, "configure", lambda *_args, **_kwargs: calls.append("configured") or [])
+    monkeypatch.setattr(bootstrap, "load_hermes", lambda _path: {"plugins": {"enabled": ["kalico-monitor"]}})
+    monkeypatch.setattr(bootstrap, "hermes_plugin_state", lambda *_args: "enabled")
     monkeypatch.setattr(autostart, "ensure_boot_autostart",
                         lambda: calls.append("linger") or True)
     args = ["--moonraker-url", "http://192.168.1.100:7125", "--chat-id", "oc_test"]
