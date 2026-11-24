@@ -41,6 +41,8 @@ If Hermes is already configured with Feishu and an LLM, use the automated bootst
 bash install.sh
 ```
 
+The Linux setup also verifies and enables **login-free boot for Kalico Monitor** using a systemd user unit and logind Linger (may request sudo authorization). This does not change Hermes startup. To check or retry independently, run `bash install.sh --check-autostart` or `bash install.sh --enable-autostart`.
+
 It prompts for the Moonraker URL, safely merges Hermes webhook routes without replacing existing Feishu/model settings, installs the Hermes plugin, manages the Monitor systemd user service, creates timestamped backups, and verifies the HTTP endpoints plus a harmless signed Feishu test notification. Default printer is `PEEK-01` and critical events use `both`. Full prerequisites, safeguards and limits: [Linux one-click guide](docs/ONE_CLICK_INSTALL.zh-CN.md). The feature is under review in PR #9 until merged.
 
 ## Reconfigure an existing installation

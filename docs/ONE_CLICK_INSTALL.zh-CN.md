@@ -26,7 +26,7 @@ bash install.sh --moonraker-url http://192.168.1.100:7125 --printer PEEK-01 --mo
 2. 加载 Hermes `config.yaml`，通过可保留注释的 YAML 解析器**仅合并 Webhook 路由**；保留已有模型、飞书及其他路由。若同名路由并非 Kalico Monitor 创建，拒绝覆盖。
 3. 生成或复用 HMAC Secret，将其同时写入 Monitor `monitor.env` 和两条 Hermes 路由；文件写入采用原子替换，旧文件备份为带时间戳的 `.bak.*` 文件并设置权限 `0600`。
 4. 通过当前终端执行 Hermes 原生权限确认，再运行 `hermes plugins install "file://<项目路径>" --enable`，重启 Gateway 使配置生效。安装器可能中断当前 Gateway 会话，请选择空闲时段安装。
-5. 创建并启用 `~/.config/systemd/user/kalico-monitor.service`，自动启动 Monitor。
+5. 创建并启用 `~/.config/systemd/user/kalico-monitor.service`，自动启动 Monitor。成功安装后，安装器检查当前 Linux 用户的 Linger；未开启时明确提示并申请 `sudo`/logind 授权，完成后再次校验 `enabled`、`active` 和 `Linger=yes`，使 Monitor 无需用户登录即可随系统启动。
 6. 检查 Moonraker `/server/info`、Hermes Webhook `/health`，并向飞书发送一条安全的 `installation_test` 通知。只有 Hermes 确认直接投递成功，才认为通知链路验收通过。
 
 不依赖任何打印机运动、加热或故障模拟。**Agent 的 LLM 推理结果、飞书消息实际被人阅读、打印机真实堵头判定**不在自动验收范围。
@@ -64,3 +64,23 @@ hermes gateway status
 - **插件安装**：Hermes 原生权限确认在终端显示，不再把交互输入隐藏到 subprocess PIPE。网关如需优雅退出，不再受通用 90 秒命令超时中断；应在空闲时执行首次安装。
 - **Agent 只读工具**：仅给 Agent Webhook 开启 `kalico_monitor` 工具集，允许使用插件提供的只读状态/力/健康查询，不授予终端、文件写入或打印机控制工具。
 - **失败恢复**：除了旧配置快照，还会尽量恢复原有 systemd 启用/停用状态，重新加载服务与 Gateway。已经发送的飞书通知和新安装的第三方插件无法保证回滚；建议初次安装前人工备份整个 `~/.hermes`。
+
+## 无人登录开机自启
+
+**首次安装成功会自动配置 Kalico Monitor 的 Linger**：这是 Linux systemd-logind 的用户级设置，允许该用户启用的 `systemd --user` 服务随系统启动，不必先登录 SSH/桌面。此操作需要相应权限，可能弹出 sudo 授权提示；不修改 Hermes 配置，也不控制 Hermes 服务。**注意：Linger 作用于该用户，其他已经启用的用户服务也可能在无人登录时启动。**
+
+无需重装即可检查或补配：
+
+```bash
+bash install.sh --check-autostart   # 只检查，不修改
+bash install.sh --enable-autostart  # 如尚未开启，按提示申请授权
+loginctl show-user "$(whoami)" -p Linger
+systemctl --user is-enabled kalico-monitor
+systemctl --user is-active kalico-monitor
+```
+
+预期输出为 `Linger=yes`、`enabled`、`active`。最后一个 `active` 只表示当前正在运行；真正的无人登录场景需要在条件允许时重启机器，并在登录前检查 Monitor 是否运行。启动时网络或 Moonraker 尚不可用时，Monitor 会按现有重连策略等待，不要求重启登录会话。
+
+安装被取消、服务未安装或没有启用时，不会触发 Linger 权限操作。使用 `--no-service` 则跳过全部 Monitor systemd 与 Linger 设置。若没有 sudo 权限或 logind 不可用，安装器会明确说明 **Monitor 服务本身已安装，但无人登录开机自启未配置成功**，不会误报成功；管理员可以执行 `sudo loginctl enable-linger "$(whoami)"` 后使用 `--check-autostart` 复查。
+
+本项目只保证 Kalico Monitor 的开机自启，不负责 Hermes Gateway 的后台运行、开机启动或权限配置。

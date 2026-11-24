@@ -514,6 +514,24 @@ def main(argv: list[str] | None = None) -> None:
         print("Moonraker HTTP、Hermes Webhook /health 和飞书测试通知均已通过。")
     print("Agent 推理和真实打印事件仍需在部署环境中单独验收。")
 
+    if not args.no_service:
+        # Linger is account-wide: enable it only after a confirmed successful
+        # installation, never after cancellation or failed configuration.
+        from .autostart import ensure_boot_autostart
+        try:
+            changed = ensure_boot_autostart()
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            parser.exit(
+                2,
+                "Monitor 已安装并可在当前会话运行，但无人登录开机自启未启用："
+                f"{exc}\\n可以稍后使用 bash install.sh --enable-autostart 重试。\\n"
+            )
+        if changed:
+            print("Kalico Monitor 已启用 Linger；重启 Linux 后无需登录即可启动。")
+        else:
+            print("Kalico Monitor 开机自启已配置（Linger=yes），无需重复授权。")
+
+
 
 if __name__ == "__main__":
     main()
