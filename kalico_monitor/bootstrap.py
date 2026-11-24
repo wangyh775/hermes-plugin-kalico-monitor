@@ -21,7 +21,7 @@ from ruamel.yaml import YAML
 
 from .notifier import make_request
 from .policy import parse_modes
-from .setup import LABELS, masked, read_env, save_env, validate_all, validate_field
+from .setup import LABELS, PLACEHOLDERS, masked, read_env, save_env, validate_all, validate_field
 
 DIRECT_PROMPT = """【Kalico Monitor 告警】{printer}
 等级：{severity}
@@ -41,6 +41,12 @@ AGENT_PROMPT = """【Kalico Monitor 智能分析】
 ID：{alert_id}"""
 ROUTES = {"kalico-alert": DIRECT_PROMPT, "kalico-analysis": AGENT_PROMPT}
 MODES = {"direct", "agent", "both"}
+
+
+def secret_needs_generation(value: str) -> bool:
+    """Match the setup validator's missing/placeholder/too-short secret cases."""
+    return len(value) < 16 or value in PLACEHOLDERS
+
 
 
 def run(args: list[str], *, check: bool = True, interactive: bool = False,
@@ -262,10 +268,6 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
     previous = read_env(env_path)
     previous["KALICO_PRINTER_NAME"] = printer
     previous["MOONRAKER_URL"] = moonraker_url
-    raw = previous.get("HERMES_WEBHOOK_SECRET", "")
-    if len(raw) < 16 or raw in ("INSECURE_NO_AUTH", "GENERATE_A_LONG_RANDOM_SECRET"):
-        raw = secrets.token_hex(32)
-    previous["HERMES_WEBHOOK_SECRET"] = raw
     previous["KALICO_ALLOWED_CHAT_IDS"] = previous.get("KALICO_ALLOWED_CHAT_IDS", "")
     if overrides is None:
         previous["KALICO_EVENT_MODES"] = (
@@ -273,6 +275,13 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
         )
     else:
         previous.update(overrides)
+    # Apply staged changes before selecting the signing key. Otherwise a key
+    # generated in the reconfiguration wizard is overwritten by a different
+    # one here, leaving the Monitor env and Hermes route out of sync.
+    raw = previous.get("HERMES_WEBHOOK_SECRET", "")
+    if secret_needs_generation(raw):
+        raw = secrets.token_hex(32)
+    previous["HERMES_WEBHOOK_SECRET"] = raw
     config = load_hermes(config_path)
     import io
     before_stream = io.StringIO()
@@ -421,6 +430,12 @@ def reconfigure_menu(values: dict[str, str], ask=input, out=print,
                 f"{key}={value}" for key, value in raw.items())
             continue
         if choice == "11":
+            # Existing/manual configurations may lack a signing key. The
+            # wizard does not expose this field, so repair it before full
+            # validation instead of making the confirmation menu unusable.
+            if secret_needs_generation(pending.get("HERMES_WEBHOOK_SECRET", "")):
+                pending["HERMES_WEBHOOK_SECRET"] = secrets.token_hex(32)
+                out("未检测到有效的 Hermes Webhook 密钥；保存时将自动生成并同步。")
             try:
                 validate_all(pending)
             except ValueError as exc:
@@ -428,13 +443,18 @@ def reconfigure_menu(values: dict[str, str], ask=input, out=print,
                 continue
             changed = {key: pending[key] for key in EDITABLE
                        if pending[key] != values.get(key)}
+            if pending["HERMES_WEBHOOK_SECRET"] != values.get("HERMES_WEBHOOK_SECRET"):
+                changed["HERMES_WEBHOOK_SECRET"] = pending["HERMES_WEBHOOK_SECRET"]
             if not changed:
                 out("没有需要保存的变更。")
                 return None
             out("即将应用：")
             for key in changed:
-                out(f"  {LABELS[key]}: {masked(key, values.get(key, ''))} -> "
-                    f"{masked(key, changed[key])}")
+                if key == "HERMES_WEBHOOK_SECRET":
+                    out("  Hermes Webhook 密钥：自动生成并同步（不显示明文）")
+                else:
+                    out(f"  {LABELS[key]}: {masked(key, values.get(key, ''))} -> "
+                        f"{masked(key, changed[key])}")
             if ask("确认备份并应用？[y/N]：").strip().lower() in {"y", "yes"}:
                 return changed
             out("没有写入，继续编辑。")
