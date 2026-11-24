@@ -612,7 +612,7 @@ def test_reconfigure_reinstalls_missing_plugin_on_confirmation(tmp_path, monkeyp
     hermes = tmp_path / ".hermes"
     hermes.mkdir()
     config = hermes / "config.yaml"
-    config.write_text("platforms: {}\\n")
+    config.write_text("platforms: {}\n")
     changed = []
     monkeypatch.setattr(bootstrap, "reconfigure_menu", lambda *_: {})
     monkeypatch.setattr(bootstrap, "configure", lambda *_args, **kwargs: changed.append(kwargs) or [])
@@ -640,7 +640,7 @@ def test_reconfigure_does_not_install_plugin_if_enabled(tmp_path, monkeypatch):
     save_env(env, values)
     hermes = tmp_path / ".hermes"
     hermes.mkdir()
-    (hermes / "config.yaml").write_text("platforms: {}\\n")
+    (hermes / "config.yaml").write_text("platforms: {}\n")
     calls = []
     monkeypatch.setattr(bootstrap, "reconfigure_menu", lambda *_: {})
     monkeypatch.setattr(bootstrap, "configure", lambda *_args, **kwargs: calls.append(kwargs) or [])
