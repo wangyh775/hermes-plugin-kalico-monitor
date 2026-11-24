@@ -18,8 +18,8 @@ from urllib.parse import urlsplit
 import aiohttp
 
 from .bootstrap import check_moonraker, check_webhook_health, hermes_plugin_state, load_hermes
-from .setup import read_env, validate_all
 from .monitor import subscribe_request
+from .setup import read_env, validate_all
 
 
 @dataclass(frozen=True)
