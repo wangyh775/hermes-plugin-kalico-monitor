@@ -422,3 +422,159 @@ def test_reconfigure_syncs_generated_key_to_hermes_and_monitor(tmp_path, monkeyp
     assert saved["HERMES_WEBHOOK_SECRET"] == changes["HERMES_WEBHOOK_SECRET"]
     assert routes["kalico-alert"]["secret"] == saved["HERMES_WEBHOOK_SECRET"]
     assert routes["kalico-analysis"]["secret"] == saved["HERMES_WEBHOOK_SECRET"]
+
+
+def test_webhook_health_502_is_reported_without_posting(monkeypatch):
+    import urllib.error
+
+    calls = []
+    monkeypatch.setattr(bootstrap.time, "sleep", lambda _: None)
+
+    def bad_health(_port):
+        calls.append("health")
+        raise urllib.error.HTTPError(
+            "http://127.0.0.1:8644/health", 502, "Bad Gateway", {}, None
+        )
+
+    monkeypatch.setattr(bootstrap, "check_webhook_health", bad_health)
+    monkeypatch.setattr(bootstrap, "test_direct_delivery",
+                        lambda *_args: calls.append("post"))
+    warnings = bootstrap.verify_notification_chain(8644, "secret", "PEEK-01")
+    assert len(warnings) == 1
+    assert "502" in warnings[0]
+    assert "健康检查连续失败" in warnings[0]
+    assert calls == ["health"] * 5
+
+
+def test_transient_502_recovers_without_duplicate_post(monkeypatch):
+    calls = []
+    monkeypatch.setattr(bootstrap.time, "sleep", lambda _: None)
+
+    def health(_port):
+        calls.append("health")
+        if calls.count("health") < 3:
+            raise RuntimeError("Hermes Webhook 健康检查失败：GET /health 返回 HTTP 502")
+
+    monkeypatch.setattr(bootstrap, "check_webhook_health", health)
+    monkeypatch.setattr(bootstrap, "test_direct_delivery",
+                        lambda *_args: calls.append("post"))
+    assert bootstrap.verify_notification_chain(8644, "secret", "PEEK-01") == []
+    assert calls == ["health", "health", "health", "post"]
+
+
+def test_direct_delivery_http_502_reports_endpoint_without_retry(monkeypatch):
+    calls = []
+    monkeypatch.setattr(bootstrap, "check_webhook_health", lambda _port: None)
+
+    def failed_post(*_args):
+        calls.append("post")
+        raise RuntimeError("飞书测试通知失败：POST /webhooks/kalico-alert 返回 HTTP 502")
+
+    monkeypatch.setattr(bootstrap, "test_direct_delivery", failed_post)
+    warnings = bootstrap.verify_notification_chain(8644, "secret", "PEEK-01")
+    assert "POST /webhooks/kalico-alert" in warnings[0]
+    assert "502" in warnings[0]
+    assert calls == ["post"]
+
+
+def test_downstream_502_preserves_installed_files(tmp_path, monkeypatch):
+    from kalico_monitor.setup import read_env
+
+    root = tmp_path / "project"
+    root.mkdir()
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    config = home / "config.yaml"
+    config.write_text("platforms:\n  feishu:\n    enabled: true\n")
+    env = tmp_path / "monitor.env"
+    env.write_text("HERMES_WEBHOOK_SECRET=\n")
+    monkeypatch.setattr(bootstrap.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/usr/bin/mock")
+    monkeypatch.setattr(bootstrap, "restart_gateway", lambda: None)
+    monkeypatch.setattr(bootstrap, "check_moonraker", lambda *_args: None)
+    monkeypatch.setattr(bootstrap, "verify_notification_chain",
+                        lambda *_args: ["Hermes Webhook 健康检查失败：GET /health 返回 HTTP 502"])
+    warnings = []
+    backup_paths = bootstrap.configure(
+        root, home, "http://192.168.31.10:7125", "PEEK-01", "both",
+        "", env, config, manage_service=False, test_connections=True,
+        install_plugin=False, verification_warnings=warnings,
+    )
+    assert warnings == ["Hermes Webhook 健康检查失败：GET /health 返回 HTTP 502"]
+    assert backup_paths
+    saved = read_env(env)
+    assert saved["MOONRAKER_URL"] == "http://192.168.31.10:7125"
+    assert len(saved["HERMES_WEBHOOK_SECRET"]) == 64
+    route = bootstrap.load_hermes(config)["platforms"]["webhook"]["extra"]["routes"]
+    assert route["kalico-alert"]["secret"] == saved["HERMES_WEBHOOK_SECRET"]
+
+
+def test_moonraker_preflight_failure_is_fatal_without_config_changes(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "project"
+    root.mkdir()
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    config = home / "config.yaml"
+    config.write_text("platforms:\n  feishu:\n    enabled: true\n")
+    env = tmp_path / "monitor.env"
+    env.write_text("HERMES_WEBHOOK_SECRET=\n")
+    original = {path: path.read_bytes() for path in (config, env)}
+    monkeypatch.setattr(bootstrap.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/usr/bin/mock")
+    monkeypatch.setattr(
+        bootstrap, "check_moonraker",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("Moonraker HTTP 502")),
+    )
+    with pytest.raises(RuntimeError, match="Moonraker"):
+        bootstrap.configure(
+            root, home, "http://192.168.31.10:7125", "PEEK-01", "both",
+            "", env, config, manage_service=False, test_connections=True,
+            install_plugin=False,
+        )
+    assert all(path.read_bytes() == content for path, content in original.items())
+
+
+def test_downstream_502_does_not_disable_new_systemd_user_service(
+    tmp_path, monkeypatch
+):
+    import subprocess
+
+    root = tmp_path / "project"
+    root.mkdir()
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    config = home / "config.yaml"
+    config.write_text("platforms:\n  feishu:\n    enabled: true\n")
+    env = tmp_path / "monitor.env"
+    env.write_text("HERMES_WEBHOOK_SECRET=\n")
+    monkeypatch.setattr(bootstrap.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/usr/bin/mock")
+    monkeypatch.setattr(bootstrap.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(bootstrap, "check_moonraker", lambda *_: None)
+    monkeypatch.setattr(bootstrap, "restart_gateway", lambda: None)
+    monkeypatch.setattr(bootstrap, "verify_notification_chain",
+                        lambda *_: ["Hermes health HTTP 502"])
+    systemd_calls = []
+
+    def fake_subprocess(argv, **_kwargs):
+        systemd_calls.append(tuple(argv))
+        return subprocess.CompletedProcess(argv, 1)
+
+    def fake_run(argv, **_kwargs):
+        systemd_calls.append(tuple(argv))
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(bootstrap.subprocess, "run", fake_subprocess)
+    monkeypatch.setattr(bootstrap, "run", fake_run)
+    warnings = []
+    bootstrap.configure(
+        root, home, "http://192.168.31.10:7125", "PEEK-01", "both",
+        "", env, config, manage_service=True, test_connections=True,
+        install_plugin=False, verification_warnings=warnings,
+    )
+    assert warnings == ["Hermes health HTTP 502"]
+    assert ("systemctl", "--user", "enable", "--now", "kalico-monitor") in systemd_calls
+    assert not any("disable" in row for row in systemd_calls)
+    assert (tmp_path / ".config/systemd/user/kalico-monitor.service").exists()

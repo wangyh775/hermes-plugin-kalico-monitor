@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -217,17 +218,35 @@ def check_moonraker(url: str, api_key: str) -> None:
     req = urllib.request.Request(url + "/server/info", headers=headers)
     # Do not route LAN traffic through environment-configured HTTP proxies.
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    with opener.open(req, timeout=5) as response:
-        if response.status != 200:
-            raise RuntimeError(f"Moonraker returned HTTP {response.status}")
+    try:
+        with opener.open(req, timeout=5) as response:
+            if response.status != 200:
+                raise RuntimeError(f"HTTP {response.status}")
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(
+            f"Moonraker 预检查失败：GET {url}/server/info 返回 HTTP {exc.code}"
+        ) from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise RuntimeError(
+            f"Moonraker 预检查失败：GET {url}/server/info 网络不可达：{exc}"
+        ) from exc
 
 
 def check_webhook_health(port: int) -> None:
     req = urllib.request.Request(f"http://127.0.0.1:{port}/health")
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    with opener.open(req, timeout=5) as response:
-        if response.status != 200:
-            raise RuntimeError(f"Webhook health returned HTTP {response.status}")
+    try:
+        with opener.open(req, timeout=5) as response:
+            if response.status != 200:
+                raise RuntimeError(f"HTTP {response.status}")
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(
+            f"Hermes Webhook 健康检查失败：GET /health 返回 HTTP {exc.code}"
+        ) from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise RuntimeError(
+            f"Hermes Webhook 健康检查失败：GET /health 连接异常：{exc}"
+        ) from exc
 
 
 def test_direct_delivery(port: int, secret: str, printer: str) -> None:
@@ -245,17 +264,60 @@ def test_direct_delivery(port: int, secret: str, printer: str) -> None:
         f"http://127.0.0.1:{port}/webhooks/kalico-alert",
         data=body, headers=headers, method="POST")
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    with opener.open(request, timeout=15) as response:
-        result = json.load(response)
+    try:
+        with opener.open(request, timeout=15) as response:
+            result = json.load(response)
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(
+            f"飞书测试通知失败：POST /webhooks/kalico-alert 返回 HTTP {exc.code}"
+        ) from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise RuntimeError(
+            f"飞书测试通知失败：POST /webhooks/kalico-alert 连接异常：{exc}"
+        ) from exc
+    except (ValueError, UnicodeError) as exc:
+        raise RuntimeError("飞书测试通知失败：Webhook 返回的 JSON 无法解析") from exc
     if not isinstance(result, dict) or result.get("status") not in {"delivered", "duplicate"}:
-        raise RuntimeError("Hermes did not confirm delivery of the installation test")
+        raise RuntimeError(
+            f"飞书测试通知失败：Webhook 未确认 delivered 状态"
+            f"（返回状态：{result.get('status', 'unknown') if isinstance(result, dict) else 'invalid'}）"
+        )
+
+
+def verify_notification_chain(port: int, secret: str, printer: str) -> list[str]:
+    """External delivery failures must never disable a healthy Monitor service.
+
+    A failing Gateway, webhook, or Feishu is outside the Monitor deployment's
+    transaction. The Monitor retains queued alerts for later delivery.
+    """
+    # Gateway restart can return a temporary 502 while its upstream is
+    # reloading. Poll health, but never retry the POST test (which could
+    # duplicate a successfully accepted notification).
+    last_error: Exception | None = None
+    for attempt in range(5):
+        try:
+            check_webhook_health(port)
+            last_error = None
+            break
+        except (OSError, RuntimeError, ValueError) as exc:
+            last_error = exc
+            if attempt < 4:
+                time.sleep(1)
+    if last_error is not None:
+        return [str(last_error) + "；健康检查连续失败，已跳过飞书测试通知"]
+    try:
+        test_direct_delivery(port, secret, printer)
+    except (OSError, RuntimeError, ValueError) as exc:
+        return [str(exc)]
+    return []
 
 
 def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
               mode: str, chat_id: str, env_path: Path, config_path: Path,
               *, manage_service: bool = True, test_connections: bool = True,
               overrides: dict[str, str] | None = None,
-              install_plugin: bool = True) -> list[Path]:
+              install_plugin: bool = True,
+              verification_warnings: list[str] | None = None) -> list[Path]:
     if platform.system() != "Linux":
         raise RuntimeError("One-click systemd installer currently supports Linux only")
     if mode not in MODES:
@@ -363,20 +425,25 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
                 run(["systemctl", "--user", "restart", "kalico-monitor"])
             run(["systemctl", "--user", "is-active", "--quiet", "kalico-monitor"])
         if test_connections:
-            check_webhook_health(port)
-            test_direct_delivery(port, raw, printer)
+            warnings = verify_notification_chain(port, raw, printer)
+            if verification_warnings is not None:
+                verification_warnings.extend(warnings)
+            else:
+                for warning in warnings:
+                    print(f"警告：{warning}。保留已安装的 Kalico Monitor 服务和配置。")
     except Exception:
         for path in reversed(touched):
             restore(path, originals[path])
         if manage_service and (unit in touched or env_path in touched):
-            # Keep an old service running if possible, but stop an incomplete new install.
+            # Restore unit files in systemd before any stop/disable action.
+            # This also avoids the "unit changed on disk" warning in rollback.
+            subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
             if not was_active:
                 subprocess.run(["systemctl", "--user", "stop", "kalico-monitor"],
                                check=False, stdout=subprocess.DEVNULL)
             if not was_enabled:
                 subprocess.run(["systemctl", "--user", "disable", "kalico-monitor"],
                                check=False, stdout=subprocess.DEVNULL)
-            subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
             if was_active:
                 subprocess.run(["systemctl", "--user", "restart", "kalico-monitor"],
                                check=False, stdout=subprocess.DEVNULL)
@@ -517,12 +584,14 @@ def main(argv: list[str] | None = None) -> None:
     if input("确认执行安装？[y/N]：").strip().lower() not in ("y", "yes"):
         print("已取消，未修改任何配置。")
         return
+    verification_warnings: list[str] = []
     try:
         backups = configure(root, hermes_home, moonraker, args.printer, args.mode,
                             args.chat_id, env_path, config_path,
                             manage_service=not args.no_service,
                             test_connections=not args.skip_checks,
-                            overrides=overrides, install_plugin=not args.reconfigure)
+                            overrides=overrides, install_plugin=not args.reconfigure,
+                            verification_warnings=verification_warnings)
     except Exception as exc:
         parser.exit(1, f"安装或验证失败：{exc}\n配置已尽可能恢复；检查 Hermes 和 systemd 状态。\n")
     print("重新配置已应用并完成服务同步。" if args.reconfigure else
@@ -530,6 +599,12 @@ def main(argv: list[str] | None = None) -> None:
     print("配置备份：" + (", ".join(str(p) for p in backups) if backups else "首次安装无旧文件"))
     if args.skip_checks:
         print("已跳过网络及飞书连通性检查；请手动验收。")
+    elif verification_warnings:
+        print("Moonraker 预检查已通过，Monitor 本地配置和服务已更新。")
+        print("外部通知链路未验证成功（不会因此回滚或禁用 Monitor）：")
+        for warning in verification_warnings:
+            print(f"  - {warning}")
+        print("建议检查 Hermes Gateway 和飞书投递；修复后可重试配置验证。")
     else:
         print("Moonraker HTTP、Hermes Webhook /health 和飞书测试通知均已通过。")
     print("Agent 推理和真实打印事件仍需在部署环境中单独验收。")
@@ -550,6 +625,8 @@ def main(argv: list[str] | None = None) -> None:
             print("Kalico Monitor 已启用 Linger；重启 Linux 后无需登录即可启动。")
         else:
             print("Kalico Monitor 开机自启已配置（Linger=yes），无需重复授权。")
+    if verification_warnings:
+        parser.exit(2, "外部通知链路尚未验证成功；Monitor 配置与服务已保留，不是安装回滚。\\n")
 
 
 
