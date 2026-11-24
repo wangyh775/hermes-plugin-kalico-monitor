@@ -44,6 +44,8 @@ Kalico + Moonraker --LAN HTTP/WS--> Kalico Monitor (systemd + SQLite)
 bash install.sh
 ```
 
+Linux 安装成功后，还会配置 **Kalico Monitor 无人登录开机自启**（systemd 用户服务 + Linger），首次可能请求 sudo 授权；不修改 Hermes 启动。之后可用 `bash install.sh --check-autostart` 检查，或 `bash install.sh --enable-autostart` 单独补配。
+
 向导会配置 Moonraker、自动合并 Hermes Webhook、安装插件、管理 systemd，并使用安全的测试通知验证飞书通道。默认 `PEEK-01` 与关键故障 `both`；具体权限前提、备份、回滚和限制见 [Linux 一键安装](docs/ONE_CLICK_INSTALL.zh-CN.md)。
 
 ## 已安装后的二次交互配置
