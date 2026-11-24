@@ -96,6 +96,26 @@ def load_hermes(path: Path) -> dict:
     return config
 
 
+def hermes_plugin_state(hermes_home: Path, config: dict) -> str:
+    """Return the observed plugin install/activation state; no mutations.
+
+    Hermes discovers plugins separately from the Monitor systemd daemon. An
+    installed directory is insufficient: third-party plugins are opt-in.
+    """
+    manifest = hermes_home / "plugins" / "kalico-monitor" / "plugin.yaml"
+    if not manifest.is_file():
+        return "missing"
+    plugins = config.get("plugins") or {}
+    if not isinstance(plugins, dict):
+        raise ValueError("Hermes plugins configuration must be a mapping")
+    enabled, disabled = plugins.get("enabled") or [], plugins.get("disabled") or []
+    if not isinstance(enabled, list) or not isinstance(disabled, list):
+        raise ValueError("Hermes plugins.enabled / disabled must be lists")
+    if "kalico-monitor" in disabled:
+        return "disabled"
+    return "enabled" if "kalico-monitor" in enabled else "not enabled"
+
+
 def home_chat(hermes_home: Path, config: dict, override: str = "") -> str:
     env = read_dotenv(hermes_home / ".env")
     platform_config = (config.get("platforms") or {}).get("feishu") or {}
@@ -316,7 +336,7 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
               mode: str, chat_id: str, env_path: Path, config_path: Path,
               *, manage_service: bool = True, test_connections: bool = True,
               overrides: dict[str, str] | None = None,
-              install_plugin: bool = True,
+              install_plugin: bool = True, enable_plugin: bool = False,
               verification_warnings: list[str] | None = None) -> list[Path]:
     if platform.system() != "Linux":
         raise RuntimeError("One-click systemd installer currently supports Linux only")
@@ -410,11 +430,22 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
             os.replace(temp, unit)
             touched.append(unit)
         if install_plugin:
-            # Let Hermes ask permission in the user's terminal instead of
-            # swallowing prompts into PIPE and eventually timing out.
+            # Preserve Hermes's security scan and interactive consent prompts;
+            # NEVER automatically bypass a CAUTION / BLOCKED verdict.
             run(["hermes", "plugins", "install", "file://" + str(root), "--enable"],
                 interactive=True, timeout=None)
-        if hermes_changed or install_plugin:
+        elif enable_plugin:
+            # Explicitly opted-in repair of a discovered but disabled plugin.
+            run(["hermes", "plugins", "enable", "kalico-monitor"],
+                interactive=True, timeout=None)
+        if install_plugin or enable_plugin:
+            observed = hermes_plugin_state(hermes_home, load_hermes(config_path))
+            if observed != "enabled":
+                raise RuntimeError(
+                    f"Hermes 插件安装/启用后状态为 {observed}，"
+                    "请检查 hermes plugins list 与 hermes plugins show kalico-monitor"
+                )
+        if hermes_changed or install_plugin or enable_plugin:
             gateway_restarted = True
             restart_gateway()
         if manage_service:
@@ -513,8 +544,8 @@ def reconfigure_menu(values: dict[str, str], ask=input, out=print,
             if pending["HERMES_WEBHOOK_SECRET"] != values.get("HERMES_WEBHOOK_SECRET"):
                 changed["HERMES_WEBHOOK_SECRET"] = pending["HERMES_WEBHOOK_SECRET"]
             if not changed:
-                out("没有需要保存的变更。")
-                return None
+                out("没有配置字段需要变更；仍将检查 Hermes 插件状态。")
+                return {}
             out("即将应用：")
             for key in changed:
                 if key == "HERMES_WEBHOOK_SECRET":
@@ -565,10 +596,23 @@ def main(argv: list[str] | None = None) -> None:
         current = read_env(env_path)
         overrides = reconfigure_menu(current)
         if overrides is None:
-            print("未修改配置。")
+            print("已取消；未修改配置和插件。")
             return
         args.printer = overrides.get("KALICO_PRINTER_NAME", current["KALICO_PRINTER_NAME"])
         args.moonraker_url = overrides.get("MOONRAKER_URL", current["MOONRAKER_URL"])
+    # The local Monitor may run even if the Hermes command plugin was never
+    # installed (for example after a failed first install + reconfigure).
+    plugin_before = hermes_plugin_state(hermes_home, load_hermes(config_path))
+    install_plugin = not args.reconfigure or plugin_before == "missing"
+    enable_plugin = args.reconfigure and plugin_before in {"disabled", "not enabled"}
+    if plugin_before == "missing":
+        print("Hermes 尚未安装 kalico-monitor 插件，将在确认后调用原生安装向导。")
+    elif enable_plugin:
+        print(f"Hermes 插件状态为 {plugin_before}；启用它需要您的额外确认。")
+        if input("是否启用 kalico-monitor？[y/N]：").strip().lower() not in {"y", "yes"}:
+            parser.exit(2, "插件尚未启用；配置未修改。\\n")
+    else:
+        print("Hermes 插件已存在并在配置中启用，跳过重复安装。")
     moonraker = args.moonraker_url
     if not moonraker:
         moonraker = input("Moonraker URL [http://192.168.1.100:7125]: ").strip() or (
@@ -590,12 +634,15 @@ def main(argv: list[str] | None = None) -> None:
                             args.chat_id, env_path, config_path,
                             manage_service=not args.no_service,
                             test_connections=not args.skip_checks,
-                            overrides=overrides, install_plugin=not args.reconfigure,
+                            overrides=overrides, install_plugin=install_plugin,
+                            enable_plugin=enable_plugin,
                             verification_warnings=verification_warnings)
     except Exception as exc:
         parser.exit(1, f"安装或验证失败：{exc}\n配置已尽可能恢复；检查 Hermes 和 systemd 状态。\n")
     print("重新配置已应用并完成服务同步。" if args.reconfigure else
           "安装成功；已注册 Hermes 插件、Webhook，并启动 Monitor 服务。")
+    print("Hermes kalico-monitor 插件：文件存在、启用配置已验证。")
+    print("命令是否被运行中的 Gateway 加载，仍需在飞书实际测试 /kalico status。")
     print("配置备份：" + (", ".join(str(p) for p in backups) if backups else "首次安装无旧文件"))
     if args.skip_checks:
         print("已跳过网络及飞书连通性检查；请手动验收。")
