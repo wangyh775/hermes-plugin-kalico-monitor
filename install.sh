@@ -28,25 +28,6 @@ for arg in "$@"; do
   fi
 done
 
-# Bootstrap remains in charge of Hermes configuration. Autostart changes ONLY
-# the invoking user's logind/systemd configuration, not Hermes.
-"$ROOT/.venv/bin/python" -m kalico_monitor.bootstrap "$@"
-
-# --no-service is the explicit opt-out for all Monitor systemd management.
-# Do not ask for linger in that mode.
-for arg in "$@"; do
-  if [[ "$arg" == "--no-service" ]]; then
-    echo "Skipped Kalico Monitor boot autostart (--no-service)."
-    exit 0
-  fi
-done
-
-# If the user canceled bootstrap, there may be no active Monitor service.
-# In that case never enable Linger for the entire user account.
-if ! systemctl --user is-enabled --quiet kalico-monitor ||
-   ! systemctl --user is-active --quiet kalico-monitor; then
-  echo "Skipped unattended autostart: Kalico Monitor service is not enabled and active." >&2
-  exit 0
-fi
-
-"$ROOT/.venv/bin/python" -m kalico_monitor.autostart
+# Bootstrap invokes the optional Linger setup only after installation succeeds.
+# Cancellation and unchanged reconfiguration never alter logind settings.
+exec "$ROOT/.venv/bin/python" -m kalico_monitor.bootstrap "$@"
