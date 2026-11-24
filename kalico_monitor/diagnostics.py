@@ -19,7 +19,7 @@ import aiohttp
 
 from .bootstrap import check_moonraker, check_webhook_health, hermes_plugin_state, load_hermes
 from .setup import read_env, validate_all
-from .watch import subscribe_request
+from .monitor import subscribe_request
 
 
 @dataclass(frozen=True)
@@ -108,7 +108,7 @@ def collect(root: Path, hermes_home: Path, env_path: Path,
 
     try:
         config = load_hermes(hermes_home / "config.yaml")
-    except (OSError, ValueError, Exception) as exc:
+    except Exception as exc:
         checks.append(Check("Hermes 配置", "FAIL", f"无法读取配置：{type(exc).__name__}"))
     else:
         checks.append(Check("Hermes 配置", "PASS", "config.yaml 可读取"))
@@ -183,7 +183,7 @@ def collect(root: Path, hermes_home: Path, env_path: Path,
                     checks.append(Check("Monitor 心跳", "PASS", f"{int(age)} 秒前"))
                 else:
                     checks.append(Check("Monitor 心跳", "WARN", "心跳缺失或超过 90 秒"))
-            except (OSError, ValueError, TypeError, KeyError, Exception) as exc:
+            except Exception as exc:
                 checks.append(Check("Monitor 心跳", "WARN", f"读取异常：{type(exc).__name__}"))
 
     if values is not None and config is not None:
