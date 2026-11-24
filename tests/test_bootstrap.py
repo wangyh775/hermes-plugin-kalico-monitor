@@ -646,6 +646,7 @@ def test_reconfigure_does_not_install_plugin_if_enabled(tmp_path, monkeypatch):
     monkeypatch.setattr(bootstrap, "reconfigure_menu", lambda *_: {})
     monkeypatch.setattr(bootstrap, "configure", lambda *_args, **kwargs: calls.append(kwargs) or [])
     monkeypatch.setattr(bootstrap, "hermes_plugin_state", lambda *_: "enabled")
+    monkeypatch.setattr("builtins.input", lambda *_: "y")
     bootstrap.main([
         "--reconfigure", "--hermes-home", str(hermes), "--env-file", str(env),
         "--no-service", "--skip-checks",
