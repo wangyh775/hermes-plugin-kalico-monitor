@@ -1,8 +1,6 @@
 """Regression coverage for read-only installation diagnostics."""
 from __future__ import annotations
 
-import ast
-from pathlib import Path
 
 import pytest
 
