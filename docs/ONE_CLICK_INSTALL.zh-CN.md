@@ -84,3 +84,22 @@ systemctl --user is-active kalico-monitor
 安装被取消、服务未安装或没有启用时，不会触发 Linger 权限操作。使用 `--no-service` 则跳过全部 Monitor systemd 与 Linger 设置。若没有 sudo 权限或 logind 不可用，安装器会明确说明 **Monitor 服务本身已安装，但无人登录开机自启未配置成功**，不会误报成功；管理员可以执行 `sudo loginctl enable-linger "$(whoami)"` 后使用 `--check-autostart` 复查。
 
 本项目只保证 Kalico Monitor 的开机自启，不负责 Hermes Gateway 的后台运行、开机启动或权限配置。
+
+
+## Webhook 502 的诊断与恢复
+
+安装器将 Moonraker `GET /server/info` 作为**修改文件前的必需预检**。如果这一步失败，立即报告明确的 Moonraker 地址和 HTTP 状态，不改写本地配置。
+
+Hermes Gateway 的 `GET /health` 和飞书通知 `POST /webhooks/kalico-alert` 属于**安装后的外部链路验证**。Gateway 刚重启时可能短暂返回 502，因此健康检查会最多重试 5 次；**测试通知不会重复 POST**，避免通知可能已投递时重复发送。若健康检查或飞书测试仍失败，输出具体的失败阶段，并保留已经验证处于运行状态的 Kalico Monitor systemd 服务及新配置，不因外部服务故障禁用 Monitor。命令以非零状态表示“外部链路待验收”，并非“已回滚”。
+
+在主机上执行以下只读命令定位故障：
+
+```bash
+systemctl --user is-enabled kalico-monitor
+systemctl --user is-active kalico-monitor
+systemctl --user status kalico-monitor --no-pager
+curl --noproxy '*' -i http://192.168.31.10:7125/server/info
+curl --noproxy '*' -i http://127.0.0.1:8644/health
+```
+
+如果 `/server/info` 正常而 `/health` 返回 502，先检查 Hermes Gateway/Webhook 及日志，不必清理或重装 Monitor。恢复后重新运行安装验证，或等待 Monitor 的消息投递重试逻辑恢复。**不要使用 `--skip-checks` 将未验收状态视为成功。**
