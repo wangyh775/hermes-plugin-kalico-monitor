@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import argparse
 import os
-import pwd
 import shutil
 import subprocess
+
+import pwd
 
 
 SERVICE = "kalico-monitor"
