@@ -1,7 +1,6 @@
 """Regression coverage for read-only installation diagnostics."""
 from __future__ import annotations
 
-
 import pytest
 
 from kalico_monitor import diagnostics
