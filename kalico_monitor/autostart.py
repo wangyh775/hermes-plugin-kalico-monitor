@@ -10,7 +10,6 @@ import os
 import shutil
 import subprocess
 
-
 SERVICE = "kalico-monitor"
 
 
