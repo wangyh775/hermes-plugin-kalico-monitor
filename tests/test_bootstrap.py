@@ -343,3 +343,82 @@ def test_rollback_restores_disabled_unit_and_config(tmp_path, monkeypatch):
     assert ("systemctl", "--user", "stop", "kalico-monitor") in actions
     assert ("systemctl", "--user", "disable", "kalico-monitor") in actions
     assert len(restarts) == 2, "restore the original Hermes config and restart gateway"
+
+
+@pytest.mark.parametrize("old_key", [
+    "", "short", "INSECURE_NO_AUTH", "GENERATE_A_LONG_RANDOM_SECRET"
+])
+def test_reconfigure_repairs_missing_webhook_secret_on_confirm(old_key):
+    from kalico_monitor.setup import defaults
+
+    current = defaults()
+    current["HERMES_WEBHOOK_SECRET"] = old_key
+    # No field edits: repair still appears in the change summary.
+    answers = iter(["11", "y"])
+    output = []
+    changes = bootstrap.reconfigure_menu(
+        current, ask=lambda _="": next(answers), out=output.append,
+    )
+    assert changes is not None
+    assert set(changes) == {"HERMES_WEBHOOK_SECRET"}
+    assert len(changes["HERMES_WEBHOOK_SECRET"]) == 64
+    assert changes["HERMES_WEBHOOK_SECRET"] != old_key
+    assert current["HERMES_WEBHOOK_SECRET"] == old_key
+    assert any("自动生成" in item for item in output)
+    # The secret must never be echoed into the interactive output.
+    assert all(changes["HERMES_WEBHOOK_SECRET"] not in item for item in output)
+
+
+def test_reconfigure_cancel_or_decline_keeps_missing_secret_unchanged():
+    from kalico_monitor.setup import defaults
+
+    current = defaults()
+    answers = iter(["11", "n", "0"])
+    assert bootstrap.reconfigure_menu(
+        current, ask=lambda _="": next(answers), out=lambda _: None,
+    ) is None
+    assert current["HERMES_WEBHOOK_SECRET"] == ""
+
+
+def test_existing_valid_secret_is_preserved_without_rotation():
+    from kalico_monitor.setup import defaults
+
+    current = defaults()
+    current["HERMES_WEBHOOK_SECRET"] = "valid-secret-at-least-16-characters"
+    answers = iter(["11"])
+    assert bootstrap.reconfigure_menu(
+        current, ask=lambda _="": next(answers), out=lambda _: None,
+    ) is None
+    assert current["HERMES_WEBHOOK_SECRET"] == "valid-secret-at-least-16-characters"
+
+
+def test_reconfigure_syncs_generated_key_to_hermes_and_monitor(tmp_path, monkeypatch):
+    from kalico_monitor.setup import defaults, read_env
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    config_path = hermes_home / "config.yaml"
+    config_path.write_text("platforms:\n  feishu:\n    enabled: true\n")
+    env_path = tmp_path / "monitor.env"
+    env_path.write_text("KALICO_PRINTER_NAME=PEEK-01\nHERMES_WEBHOOK_SECRET=\n")
+    current = read_env(env_path)
+    choices = iter(["11", "y"])
+    changes = bootstrap.reconfigure_menu(
+        current, ask=lambda _="": next(choices), out=lambda _: None,
+    )
+    monkeypatch.setattr(bootstrap.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/usr/bin/mock")
+    monkeypatch.setattr(bootstrap, "restart_gateway", lambda: None)
+    bootstrap.configure(
+        root, hermes_home, current["MOONRAKER_URL"], "PEEK-01", "direct",
+        "", env_path, config_path, manage_service=False,
+        test_connections=False, overrides=changes, install_plugin=False,
+    )
+    saved = read_env(env_path)
+    hermes = bootstrap.load_hermes(config_path)
+    routes = hermes["platforms"]["webhook"]["extra"]["routes"]
+    assert saved["HERMES_WEBHOOK_SECRET"] == changes["HERMES_WEBHOOK_SECRET"]
+    assert routes["kalico-alert"]["secret"] == saved["HERMES_WEBHOOK_SECRET"]
+    assert routes["kalico-analysis"]["secret"] == saved["HERMES_WEBHOOK_SECRET"]
