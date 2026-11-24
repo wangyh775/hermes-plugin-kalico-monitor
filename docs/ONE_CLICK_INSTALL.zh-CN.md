@@ -103,3 +103,20 @@ curl --noproxy '*' -i http://127.0.0.1:8644/health
 ```
 
 如果 `/server/info` 正常而 `/health` 返回 502，先检查 Hermes Gateway/Webhook 及日志，不必清理或重装 Monitor。恢复后重新运行安装验证，或等待 Monitor 的消息投递重试逻辑恢复。**不要使用 `--skip-checks` 将未验收状态视为成功。**
+
+
+## /kalico 命令缺失时的插件检查
+
+Monitor 的 systemd 服务和 Hermes 插件是两个独立组件。后者必须已安装、启用并被运行中的 Gateway 加载，才会注册 /kalico 只读命令。此前初次安装失败后仅运行 --reconfigure 的机器，可能遗漏插件安装。
+
+重新配置时，在用户明确确认后检查 ~/.hermes/plugins/kalico-monitor/plugin.yaml 和 ~/.hermes/config.yaml 的 plugins.enabled / plugins.disabled：缺失则启动 Hermes 原生交互安装；停用则单独征求启用许可；已启用则不重复安装。不会自动使用 --force 绕过 Hermes 的安全扫描或授权流程。安装/启用后会再次校验插件文件和启用配置；运行中的 Gateway 是否真正注册命令，仍以飞书 /kalico status 实测为准。
+
+检查命令：
+
+```bash
+hermes plugins list --plain --no-bundled
+hermes plugins show kalico-monitor
+hermes gateway status
+```
+
+安全扫描中的权限提升、网络访问、依赖安装和持久化项目需要人工审核；中途显示 Installed 不等于所有依赖已完成准备。
