@@ -140,3 +140,26 @@ def test_root_uses_loginctl_directly(monkeypatch):
     monkeypatch.setattr(autostart.os, "geteuid", lambda: 0)
     assert autostart.ensure_boot_autostart() is True
     assert ["loginctl", "enable-linger", "kalico"] in calls
+
+
+@pytest.mark.parametrize("confirmed,no_service,expected", [
+    (False, False, 0),
+    (True, False, 1),
+    (True, True, 0),
+])
+def test_bootstrap_only_enables_linger_after_success(
+    monkeypatch, confirmed, no_service, expected
+):
+    from kalico_monitor import bootstrap
+
+    calls = []
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "y" if confirmed else "n")
+    monkeypatch.setattr(bootstrap, "configure", lambda *_args, **_kwargs: calls.append("configured") or [])
+    monkeypatch.setattr(autostart, "ensure_boot_autostart",
+                        lambda: calls.append("linger") or True)
+    args = ["--moonraker-url", "http://192.168.1.100:7125", "--chat-id", "oc_test"]
+    if no_service:
+        args.append("--no-service")
+    bootstrap.main(args)
+    assert calls.count("linger") == expected
+    assert calls.count("configured") == int(confirmed)
