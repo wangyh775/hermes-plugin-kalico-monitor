@@ -393,7 +393,7 @@ def test_existing_valid_secret_is_preserved_without_rotation():
 
 
 def test_reconfigure_syncs_generated_key_to_hermes_and_monitor(tmp_path, monkeypatch):
-    from kalico_monitor.setup import defaults, read_env
+    from kalico_monitor.setup import read_env
 
     root = tmp_path / "repo"
     root.mkdir()
