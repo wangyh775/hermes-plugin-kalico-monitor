@@ -333,6 +333,7 @@ def test_rollback_restores_disabled_unit_and_config(tmp_path, monkeypatch):
     restarts = []
     monkeypatch.setattr(bootstrap.subprocess, "run", fake_subprocess)
     monkeypatch.setattr(bootstrap, "run", fake_run)
+    monkeypatch.setattr(bootstrap, "hermes_plugin_state", lambda *_: "enabled")
     monkeypatch.setattr(bootstrap, "restart_gateway", lambda: restarts.append("restart"))
     with pytest.raises(RuntimeError, match="simulated"):
         bootstrap.configure(root, hermes, "http://192.168.1.100:7125",
