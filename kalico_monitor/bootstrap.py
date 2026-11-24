@@ -613,6 +613,9 @@ def main(argv: list[str] | None = None) -> None:
             parser.exit(2, "插件尚未启用；配置未修改。\\n")
     else:
         print("Hermes 插件已存在并在配置中启用，跳过重复安装。")
+    if args.reconfigure and not overrides and not install_plugin and not enable_plugin:
+        print("当前配置没有变更，Hermes 插件也已启用，无需重复部署。")
+        return
     moonraker = args.moonraker_url
     if not moonraker:
         moonraker = input("Moonraker URL [http://192.168.1.100:7125]: ").strip() or (
