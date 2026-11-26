@@ -48,6 +48,18 @@ Linux 安装成功后，还会配置 **Kalico Monitor 无人登录开机自启**
 
 向导会配置 Moonraker、自动合并 Hermes Webhook、安装插件、管理 systemd，并使用安全的测试通知验证飞书通道。默认 `PEEK-01` 与关键故障 `both`；具体权限前提、备份、回滚和限制见 [Linux 一键安装](docs/ONE_CLICK_INSTALL.zh-CN.md)。
 
+## 安装后完整自检
+
+安装和二次配置结束后，`install.sh` 自动进行只读自检。可随时单独执行：
+
+```bash
+bash install.sh --check
+```
+
+分项报告包括 Monitor 配置和 SQLite 心跳、systemd/Linger、Hermes 插件安装/启用状态与只读命令注册代码、Webhook 配置与密钥、Moonraker HTTP/WebSocket 连接、Hermes Gateway 健康检查。**FAIL 代表明确失败，WARN 表示尚未证明通过**；失败不会自动暂停打印或禁用 Monitor。飞书实际命令加载和消息最终接收仍需在真实会话验收。
+
+代码更新不止 `git pull`：本地源码、运行中的 Monitor 服务和 Hermes 安装副本是独立的。更新后需要按情况更新 Python 环境、重启 Monitor、同步 Hermes 插件并重载 Gateway，最后运行自检。详细步骤见 [安装与部署](docs/ONE_CLICK_INSTALL.zh-CN.md)。
+
 ## 已安装后的二次交互配置
 
 无需重新安装 Hermes 插件，直接在仓库目录执行：

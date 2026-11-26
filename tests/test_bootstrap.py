@@ -333,6 +333,7 @@ def test_rollback_restores_disabled_unit_and_config(tmp_path, monkeypatch):
     restarts = []
     monkeypatch.setattr(bootstrap.subprocess, "run", fake_subprocess)
     monkeypatch.setattr(bootstrap, "run", fake_run)
+    monkeypatch.setattr(bootstrap, "hermes_plugin_state", lambda *_: "enabled")
     monkeypatch.setattr(bootstrap, "restart_gateway", lambda: restarts.append("restart"))
     with pytest.raises(RuntimeError, match="simulated"):
         bootstrap.configure(root, hermes, "http://192.168.1.100:7125",
@@ -388,7 +389,7 @@ def test_existing_valid_secret_is_preserved_without_rotation():
     answers = iter(["11"])
     assert bootstrap.reconfigure_menu(
         current, ask=lambda _="": next(answers), out=lambda _: None,
-    ) is None
+    ) == {}
     assert current["HERMES_WEBHOOK_SECRET"] == "valid-secret-at-least-16-characters"
 
 
@@ -578,3 +579,76 @@ def test_downstream_502_does_not_disable_new_systemd_user_service(
     assert ("systemctl", "--user", "enable", "--now", "kalico-monitor") in systemd_calls
     assert not any("disable" in row for row in systemd_calls)
     assert (tmp_path / ".config/systemd/user/kalico-monitor.service").exists()
+
+
+
+def test_hermes_plugin_state_checks_manifest_and_enabled_list(tmp_path):
+    from kalico_monitor import bootstrap
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    cfg = {"plugins": {"enabled": [], "disabled": []}}
+    assert bootstrap.hermes_plugin_state(home, cfg) == "missing"
+    path = home / "plugins" / "kalico-monitor"
+    path.mkdir(parents=True)
+    (path / "plugin.yaml").write_text("name: kalico-monitor\\n")
+    assert bootstrap.hermes_plugin_state(home, cfg) == "not enabled"
+    assert bootstrap.hermes_plugin_state(
+        home, {"plugins": {"enabled": ["kalico-monitor"], "disabled": []}}
+    ) == "enabled"
+    assert bootstrap.hermes_plugin_state(
+        home, {"plugins": {"enabled": ["kalico-monitor"], "disabled": ["kalico-monitor"]}}
+    ) == "disabled"
+
+
+def test_reconfigure_reinstalls_missing_plugin_on_confirmation(tmp_path, monkeypatch):
+    from kalico_monitor.setup import defaults, save_env
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    env = tmp_path / "monitor.env"
+    values = defaults()
+    values["HERMES_WEBHOOK_SECRET"] = "s" * 64
+    save_env(env, values)
+    hermes = tmp_path / ".hermes"
+    hermes.mkdir()
+    config = hermes / "config.yaml"
+    config.write_text("platforms: {}\n")
+    changed = []
+    monkeypatch.setattr(bootstrap, "reconfigure_menu", lambda *_: {})
+    monkeypatch.setattr(bootstrap, "configure", lambda *_args, **kwargs: changed.append(kwargs) or [])
+    monkeypatch.setattr(bootstrap, "hermes_plugin_state", lambda *_: "missing")
+    monkeypatch.setattr(bootstrap.platform, "system", lambda: "Linux")
+    monkeypatch.setattr("builtins.input", lambda *_: "y")
+    monkeypatch.setattr("sys.argv", ["kalico-bootstrap"])
+    # Isolate from machine paths using explicit args.
+    monkeypatch.setattr(bootstrap.Path, "home", lambda: tmp_path)
+    bootstrap.main([
+        "--reconfigure", "--hermes-home", str(hermes), "--env-file", str(env),
+        "--no-service", "--skip-checks",
+    ])
+    assert len(changed) == 1
+    assert changed[0]["install_plugin"] is True
+    assert changed[0]["enable_plugin"] is False
+
+
+def test_reconfigure_does_not_install_plugin_if_enabled(tmp_path, monkeypatch):
+    from kalico_monitor.setup import defaults, save_env
+
+    env = tmp_path / "monitor.env"
+    values = defaults()
+    values["HERMES_WEBHOOK_SECRET"] = "s" * 64
+    save_env(env, values)
+    hermes = tmp_path / ".hermes"
+    hermes.mkdir()
+    (hermes / "config.yaml").write_text("platforms: {}\n")
+    calls = []
+    monkeypatch.setattr(bootstrap, "reconfigure_menu", lambda *_: {})
+    monkeypatch.setattr(bootstrap, "configure", lambda *_args, **kwargs: calls.append(kwargs) or [])
+    monkeypatch.setattr(bootstrap, "hermes_plugin_state", lambda *_: "enabled")
+    monkeypatch.setattr("builtins.input", lambda *_: "y")
+    bootstrap.main([
+        "--reconfigure", "--hermes-home", str(hermes), "--env-file", str(env),
+        "--no-service", "--skip-checks",
+    ])
+    assert not calls

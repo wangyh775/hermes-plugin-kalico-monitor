@@ -103,3 +103,48 @@ curl --noproxy '*' -i http://127.0.0.1:8644/health
 ```
 
 如果 `/server/info` 正常而 `/health` 返回 502，先检查 Hermes Gateway/Webhook 及日志，不必清理或重装 Monitor。恢复后重新运行安装验证，或等待 Monitor 的消息投递重试逻辑恢复。**不要使用 `--skip-checks` 将未验收状态视为成功。**
+
+
+## /kalico 命令缺失时的插件检查
+
+Monitor 的 systemd 服务和 Hermes 插件是两个独立组件。后者必须已安装、启用并被运行中的 Gateway 加载，才会注册 /kalico 只读命令。此前初次安装失败后仅运行 --reconfigure 的机器，可能遗漏插件安装。
+
+重新配置时，在用户明确确认后检查 ~/.hermes/plugins/kalico-monitor/plugin.yaml 和 ~/.hermes/config.yaml 的 plugins.enabled / plugins.disabled：缺失则启动 Hermes 原生交互安装；停用则单独征求启用许可；已启用则不重复安装。不会自动使用 --force 绕过 Hermes 的安全扫描或授权流程。安装/启用后会再次校验插件文件和启用配置；运行中的 Gateway 是否真正注册命令，仍以飞书 /kalico status 实测为准。
+
+检查命令：
+
+```bash
+hermes plugins list --plain --no-bundled
+hermes plugins show kalico-monitor
+hermes gateway status
+```
+
+安全扫描中的权限提升、网络访问、依赖安装和持久化项目需要人工审核；中途显示 Installed 不等于所有依赖已完成准备。
+
+## 安装后自动自检与版本更新
+
+使用 `bash install.sh` 或 `bash install.sh --reconfigure` 完成配置后，脚本会自动运行只读 `kalico_monitor.diagnostics`：依次检查 Monitor 配置完整性、Hermes 配置/插件安装启用状态、已安装插件的 `/kalico` 和三项只读工具注册代码、Monitor systemd 状态及 Linger、SQLite 心跳、Webhook 双路密钥一致性、Moonraker HTTP 与 WebSocket 只读状态订阅，以及 Hermes Webhook /health。发现明确失败显示 `[FAIL]`，以非零状态结束；无法从本机确认的项目显示 `[WARN]`。即使 `[FAIL]`，也不会因为自检停止正在运行的打印任务或撤销已有服务。自检不发送 G-code，也不触发打印控制。
+
+随时运行完整自检（**只读，不重新 pip install，不修改 Hermes 或 systemd**）：
+
+```bash
+cd ~/hermes-plugin-kalico-monitor
+bash install.sh --check
+```
+
+安装器可以从已安装插件副本检查静态的命令注册声明，但**不能仅凭静态代码保证当前运行的 Gateway 已实际加载命令**。必须在飞书里直接测试 `/kalico status`；飞书投递亦须观察实际接收，不会把 `status=accepted` 误认为真实阅读或 Agent 推理完成。
+
+### 修改或更新代码后怎么部署
+
+从 GitHub 获取新提交时，在项目目录先确认无未提交的本地修改，然后：
+
+```bash
+git status --short
+git pull --ff-only origin main
+.venv/bin/python -m pip install -e .
+systemctl --user restart kalico-monitor
+```
+
+**以上仅更新 Monitor**：Hermes 插件是 `~/.hermes/plugins/kalico-monitor` 中的独立安装副本，`git pull` 不一定更新它。通过 `hermes plugins show kalico-monitor` 确认安装来源；如果是已跟踪的 Git 来源，可使用 `hermes plugins update kalico-monitor` 更新。对于 `file://` 本地安装来源，请确认 Hermes CLI 是否提供更新能力，必要时使用原生安装/更新流程重新同步本地源码（保留安全扫描与授权确认），随后运行 `hermes gateway restart --yes`。不要修改已安装副本作为主要开发工作流，也不要无条件使用 `--force` 跳过插件安全扫描。
+
+更新完成后运行 `bash install.sh --check` 并在飞书测试 `/kalico status`。如果自己有未提交的更改，先用 `git diff` 核对，再 `git commit` 到开发分支；不要直接 `git reset --hard`。需要合并远端变更时先解决 Git 冲突。
