@@ -24,7 +24,8 @@ class Alert:
 
 
 SEVERITY = {
-    "complete": "info", "cancelled": "info", "paused": "warning",
+    "started": "info", "resumed": "info", "complete": "info",
+    "cancelled": "info", "paused": "warning",
     "stalled": "warning", "error": "critical", "klippy_shutdown": "critical",
 }
 
@@ -45,7 +46,8 @@ class EventProcessor:
                 detail += " | Recent G-code: " + " / ".join(list(self.recent_errors)[-3:])
             out.append(Alert(kind=event["kind"], generation=event["generation"],
                              filename=sample["filename"], detail=detail[:1500],
-                             severity=SEVERITY[event["kind"]]))
+                             severity=SEVERITY[event["kind"]],
+                             sequence=event.get("sequence")))
         return out
 
     def set_snapshot(self, status: dict, now: float) -> tuple[dict, list[Alert]]:
