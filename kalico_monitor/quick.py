@@ -136,7 +136,7 @@ def format_status(data: dict, printer: str = "Kalico",
         "elapsed": f"已打印：{duration(stats.get('print_duration'))}",
         "remaining": f"预计剩余：{remaining_time(stats, virtual)}",
     }
-    return "\\n".join([f"🖨️ {printer} · 实时状态", *(values[key] for key in chosen)])
+    return "\n".join([f"🖨️ {printer} · 实时状态", *(values[key] for key in chosen)])
 
 def _temperature(status: dict, name: str) -> str:
     obj = _mapping(status.get(name))
