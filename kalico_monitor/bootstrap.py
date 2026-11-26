@@ -23,6 +23,7 @@ from ruamel.yaml import YAML
 from .notifier import make_request
 from .policy import parse_modes
 from .setup import LABELS, PLACEHOLDERS, masked, read_env, save_env, validate_all, validate_field
+from .status_fields import FIELD_LABELS, parse_fields
 
 DIRECT_PROMPT = """【Kalico Monitor 告警】{printer}
 等级：{severity}
@@ -463,7 +464,37 @@ EDITABLE = (
     "KALICO_WATCH_NOZZLE_FORCE", "KALICO_PROGRESS_REPORT_MINUTES",
     "KALICO_STALL_MINUTES", "KALICO_DISCONNECT_SECONDS",
     "KALICO_EVENT_MODES", "KALICO_ALLOWED_CHAT_IDS",
+    "KALICO_STATUS_FIELDS", "KALICO_CHAMBER_OBJECT",
 )
+
+
+def select_status_fields(current: str, ask=input, out=print) -> str:
+    """Toggle status fields interactively; no changes until confirmed."""
+    selected = list(parse_fields(current))
+    keys = list(FIELD_LABELS)
+    while True:
+        out("\\n/kalico status 显示字段（输入编号切换）")
+        for index, key in enumerate(keys, 1):
+            marker = "x" if key in selected else " "
+            out(f"[{index}] [{marker}] {FIELD_LABELS[key]} ({key})")
+        out("[s] 保存选择  [0] 取消")
+        choice = ask("选择：").strip().lower()
+        if choice == "0":
+            return current
+        if choice == "s":
+            if not selected:
+                out("至少选择一个显示字段。")
+                continue
+            return validate_field("KALICO_STATUS_FIELDS", ",".join(selected))
+        if choice.isdecimal() and 1 <= int(choice) <= len(keys):
+            key = keys[int(choice) - 1]
+            if key in selected:
+                selected.remove(key)
+            else:
+                selected.append(key)
+            selected.sort(key=keys.index)
+        else:
+            out("无效选项。")
 
 
 def reconfigure_menu(values: dict[str, str], ask=input, out=print,
@@ -475,13 +506,28 @@ def reconfigure_menu(values: dict[str, str], ask=input, out=print,
     pending = dict(values)
     while True:
         out("\nKalico Monitor 现有配置（回车保留原值）")
-        for index, key in enumerate(EDITABLE, 1):
+        for index, key in enumerate(EDITABLE[:9], 1):
             out(f"[{index}] {LABELS[key]}: {masked(key, pending.get(key, ''))}")
         out("[10] 关键故障策略（direct / agent / both）")
+        out("[12] /kalico status 选择显示字段")
+        out(f"[13] 腔体温度对象：{masked('KALICO_CHAMBER_OBJECT', pending.get('KALICO_CHAMBER_OBJECT', ''))}")
         out("[11] 确认并保存   [0] 取消")
         choice = ask("请选择：").strip()
         if choice == "0":
             return None
+        if choice == "12":
+            pending["KALICO_STATUS_FIELDS"] = select_status_fields(
+                pending["KALICO_STATUS_FIELDS"], ask, out)
+            continue
+        if choice == "13":
+            raw = ask("腔体温度对象（回车保留，- 为自动发现）：").strip()
+            if raw:
+                try:
+                    pending["KALICO_CHAMBER_OBJECT"] = validate_field(
+                        "KALICO_CHAMBER_OBJECT", "" if raw == "-" else raw)
+                except ValueError as exc:
+                    out(f"输入无效：{exc}")
+            continue
         if choice == "10":
             mode = ask("关键故障模式 [direct/agent/both]：").strip()
             if mode not in MODES:
@@ -526,7 +572,7 @@ def reconfigure_menu(values: dict[str, str], ask=input, out=print,
                 return changed
             out("没有写入，继续编辑。")
             continue
-        if not choice.isdecimal() or not 1 <= int(choice) <= len(EDITABLE):
+        if not choice.isdecimal() or not 1 <= int(choice) <= 9:
             out("无效选项。")
             continue
         key = EDITABLE[int(choice) - 1]
