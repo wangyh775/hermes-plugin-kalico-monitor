@@ -16,7 +16,7 @@ KALICO_ALLOWED_CHAT_IDS=
 KALICO_EVENT_MODES=klippy_shutdown=both,nozzle_force_anomaly=both
 ```
 
-也可运行 `kalico-monitor config`，在菜单 8 设置分析端点与事件模式。事件配置写在本地 `monitor.env` 中，避免新增 YAML 解析依赖。语法为逗号分隔的 `kind=mode`，支持 `default=direct|agent|both`；未知事件默认直接发送。建议 `complete=direct,paused=direct,print_progress=direct,klippy_shutdown=both,nozzle_force_anomaly=both`。
+也可运行 `kalico-monitor config`，在菜单 8 设置分析端点与事件模式。事件配置写在本地 `monitor.env` 中，避免新增 YAML 解析依赖。语法为逗号分隔的 `kind=mode`，支持 `default=direct|agent|both`；未知事件默认直接发送。建议 `started=direct,resumed=direct,complete=direct,paused=direct,print_progress=direct,klippy_shutdown=both,nozzle_force_anomaly=both`。
 
 - **direct**：使用 `kalico-alert`，Hermes `deliver_only: true`，不触发 LLM。
 - **agent**：使用 `kalico-analysis`，Hermes `deliver_only: false`，由 Agent 分析后发送。
@@ -27,6 +27,27 @@ Agent 路由成功依据为 JSON `status=accepted` 或 `duplicate`，表示 Herm
 旧版 SQLite `alerts` 表保留，新增 `alert_routes` 表，无需手工迁移。第一次分发时按当时规则生成支路；已生成的任务不会因为后续策略调整而静默改变。已有已送达告警不会再投递。
 
 **安全约束**：Monitor 只读 Moonraker/本地状态，不发 G-code；Agent 提示词仅授予只读诊断能力。LLM 结果仅供辅助判断，不可直接参与加热、运动、堵头暂停等安全控制。若指定了 agent/both，先配置并验证 Hermes Agent 路由；如果 Agent 地址缺失，**普通 direct 告警仍会正常投递**，只有 agent 支路记录配置失败并退避重试；只有纯 agent 模式需要等待路由恢复。
+
+
+## 打印生命周期通知（开始、暂停、恢复、完成）
+
+Monitor 基于 Moonraker `print_stats.state` 状态变化自动生成事件：
+
+| 状态转移 | 事件名称 | 默认路由 |
+| --- | --- | --- |
+| standby / complete / cancelled / error → printing | `started` | direct |
+| printing → paused | `paused` | direct |
+| paused → printing | `resumed` | direct |
+| printing / paused → complete | `complete` | direct |
+| printing / paused → cancelled | `cancelled` | direct |
+
+**同一任务多次暂停和恢复**均可通知。暂停/恢复每次增加独立、持久化的序号，防止 SQLite 幂等 ID 把第二次暂停当成重复事件。进程重启后保留序号。
+
+**首次连接恰好已在 printing 状态时不虚构开始事件**：只有观察到从非打印中切换到 printing 才发送 `started`。如果开始、结束发生在 Moonraker WebSocket 未连接的间隙，只能根据下一份快照尝试推断，不保证补出所有丢失的中间状态。
+
+**力异常触发自动暂停时**，`nozzle_force_anomaly` 和 `paused` 是两条独立通知：前者是传感器异常，后者是实际打印状态变化。不再静默丢弃 `paused`。配置 `KALICO_EVENT_MODES` 时可分别设置两个事件的 direct/agent/both。
+
+如果没有收到消息，先在服务日志中寻找 `queued started/paused/resumed/complete`，判断是否进入 SQLite 队列，再检查 `notification accepted: kind=... route=...` 或 `notification retry scheduled: kind=...`。`accepted` 代表 Hermes 对该 Webhook 支路给出有效确认，并不证明人在飞书阅读。
 
 ## 验证
 

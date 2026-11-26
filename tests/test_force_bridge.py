@@ -171,7 +171,7 @@ def test_normal_manual_pause_is_preserved(tmp_path):
         db.close()
 
 
-def test_force_pause_same_delta_suppresses_generic_pause(tmp_path):
+def test_force_pause_same_delta_preserves_generic_pause(tmp_path):
     cfg = config(tmp_path)
     db = Outbox(cfg.sqlite_path, cfg.printer)
     monitor = Monitor(cfg, db)
@@ -183,7 +183,7 @@ def test_force_pause_same_delta_suppresses_generic_pause(tmp_path):
             "print_stats": {"state": "paused"},
         }, time.time())
         monitor._record(processor, state, alerts)
-        assert [item["kind"] for item in db.pending()] == ["nozzle_force_anomaly"]
+        assert [item["kind"] for item in db.pending()] == ["nozzle_force_anomaly", "paused"]
         assert "已观察到打印暂停" in db.pending()[0]["detail"]
     finally:
         db.close()
@@ -240,7 +240,7 @@ async def test_missing_optional_klippy_object_falls_back_to_standard_subscriptio
 
 
 @pytest.mark.asyncio
-async def test_ws_force_trigger_delivers_only_event_not_pause(tmp_path):
+async def test_ws_force_trigger_delivers_event_and_pause(tmp_path):
     triggered = asyncio.Event()
 
     async def websocket_handler(request):
@@ -276,7 +276,7 @@ async def test_ws_force_trigger_delivers_only_event_not_pause(tmp_path):
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
-        assert [a["kind"] for a in db.pending()] == ["nozzle_force_anomaly"]
+        assert [a["kind"] for a in db.pending()] == ["nozzle_force_anomaly", "paused"]
     finally:
         db.close()
         await runner.cleanup()

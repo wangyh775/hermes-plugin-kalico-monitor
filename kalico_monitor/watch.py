@@ -44,6 +44,7 @@ def initial_state(sample: dict, now: float) -> dict:
         "generation": 1 if sample["state"] in ("printing", "paused") else 0,
         "stops": 0,
         "notified": [],
+        "transition_counts": {},
         "file_position": sample["file_position"],
         "progress": sample["progress"],
         "progress_changed_at": now,
@@ -84,6 +85,9 @@ def compare(previous: dict | None, sample: dict, now: float, stall_minutes: int 
     notified = set(previous.get("notified", []))
     if new_job:
         notified = set()
+    transition_counts = dict(previous.get("transition_counts") or {})
+    if new_job:
+        transition_counts = {}
 
     if stopped and old_klippy not in STOPPED:
         stops = int(previous.get("stops", 0)) + 1
@@ -97,13 +101,25 @@ def compare(previous: dict | None, sample: dict, now: float, stall_minutes: int 
             notified.add(key)
             events.append({"kind": kind, "generation": generation, "detail": detail})
 
+    def transition(kind: str, detail: str) -> None:
+        # Pause/resume can happen repeatedly in one print. A generation-only
+        # dedupe key loses the second pause; persist a per-kind sequence.
+        sequence = int(transition_counts.get(kind, 0)) + 1
+        transition_counts[kind] = sequence
+        events.append({"kind": kind, "generation": generation, "detail": detail,
+                       "sequence": sequence})
+
+    if new_job and not stopped:
+        once("started", f"Print started: {sample['filename'] or '(unknown)'}")
     if new_print != old_print:
         if new_print == "complete":
             once("complete", f"Print completed: {sample['filename'] or '(unknown)'}")
         elif new_print == "error" and not stopped:
             once("error", sample["message"] or "Print entered error state")
         elif new_print == "paused" and old_print == "printing" and not stopped:
-            once("paused", f"Print paused: {sample['filename'] or '(unknown)'}")
+            transition("paused", f"Print paused: {sample['filename'] or '(unknown)'}")
+        elif new_print == "printing" and old_print == "paused" and not stopped:
+            transition("resumed", f"Print resumed: {sample['filename'] or '(unknown)'}")
         elif new_print == "cancelled":
             once("cancelled", f"Print cancelled: {sample['filename'] or '(unknown)'}")
 
@@ -128,7 +144,8 @@ def compare(previous: dict | None, sample: dict, now: float, stall_minutes: int 
     state.update({
         "version": 1, "filename": sample["filename"], "state": new_print,
         "klippy_state": new_klippy, "generation": generation,
-        "notified": sorted(notified), "file_position": sample["file_position"],
+        "notified": sorted(notified), "transition_counts": transition_counts,
+        "file_position": sample["file_position"],
         "progress": sample["progress"], "progress_changed_at": changed_at,
         "stall_open": stall_open,
     })

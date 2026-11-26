@@ -71,11 +71,13 @@ class Monitor:
                 LOG.warning("queued %s %s", alert.kind, alert.detail)
 
     def _record(self, processor: EventProcessor, current: dict, alerts: list[Alert]) -> None:
-        """Persist optional force events before generic pause notifications."""
+        """Persist lifecycle events even when a force alarm also caused PAUSE.
+
+        A force alarm and a print-state transition answer different questions:
+        suppressing the latter made real pause callbacks disappear.
+        """
         if self.force_tracker is not None:
             self.force_tracker.observe(processor.status, current)
-            if self.force_tracker.suppress_generic_pause(current):
-                alerts = [a for a in alerts if a.kind != "paused"]
         self._save(current, alerts)
 
     def _heartbeat(self) -> None:
@@ -115,10 +117,12 @@ class Monitor:
                 except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
                     self.store.route_failed(item["id"], route,
                                             type(exc).__name__ + ": " + str(exc)[:100])
-                    LOG.warning("notification retry scheduled: %s (%s)", item["id"], route)
+                    LOG.warning("notification retry scheduled: kind=%s id=%s route=%s cause=%s",
+                            item["kind"], item["id"], route, type(exc).__name__)
                 else:
                     self.store.route_delivered(item["id"], route)
-                    LOG.info("notification %s accepted: %s", route, item["id"])
+                    LOG.info("notification accepted: kind=%s id=%s route=%s",
+                         item["kind"], item["id"], route)
             await asyncio.sleep(2)
 
     def _process_snapshot(self, processor: EventProcessor, snapshot: dict):
