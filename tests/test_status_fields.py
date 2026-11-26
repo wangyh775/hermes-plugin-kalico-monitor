@@ -1,8 +1,6 @@
 """Configurable status command, optional chamber and ETA regression coverage."""
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from kalico_monitor import bootstrap, status
@@ -95,7 +93,7 @@ def test_remaining_unavailable_on_idle_or_insufficient_progress(sample):
     assert "非打印中" in remaining_time(idle, sample["virtual_sdcard"])
     assert "数据不足" in remaining_time(sample["print_stats"], {"progress": 0.01})
     assert "数据不足" in remaining_time(sample["print_stats"], {"progress": True})
-    assert "数据不足" in remaining_time({}, {"progress": 0.5})
+    assert "数据不足" in remaining_time({"state": "printing"}, {"progress": 0.5})
     assert "腔体：—" in format_status({"print_stats": {"state": "standby"}})
 
 
