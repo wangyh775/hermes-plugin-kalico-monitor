@@ -16,6 +16,47 @@
 
 该命令要求在已经安装本项目的 Python 虚拟环境中运行。监控服务原有无参数启动方式保持不变。
 
+## /kalico status 显示字段（新功能）
+
+`/kalico status` 支持从 `monitor.env` 读取字段列表，默认按以下顺序显示本次选择的八项：
+
+```ini
+KALICO_STATUS_FIELDS=state,file,progress,nozzle,bed,chamber,elapsed,remaining
+KALICO_CHAMBER_OBJECT=
+```
+
+| 字段名 | 显示内容 | Moonraker 来源 |
+| --- | --- | --- |
+| `state` | 打印与 Klippy 状态 | `print_stats.state`、`webhooks.state` |
+| `file` | 当前 G-code 文件名 | `print_stats.filename` |
+| `progress` | 文件位置进度 | `virtual_sdcard.progress` |
+| `nozzle` | 喷嘴当前/目标温度 | `extruder` |
+| `bed` | 热床当前/目标温度 | `heater_bed` |
+| `chamber` | 腔体当前温度 | 可选 `temperature_sensor`、`heater_generic`、`temperature_fan` |
+| `elapsed` | 已打印时间 | `print_stats.print_duration` |
+| `remaining` | 预计剩余时间（粗略估算） | `print_duration × (1 - progress) / progress` |
+
+`remaining` 仅在 `print_stats.state=printing`、`print_duration > 0`、进度处于 5%–100%（不含 100%）时显示估算；它来自 G-code 文件位置的线性估算，**不是 Orca 等切片器的预计打印时长，不能代表真实剩余时间**。暂停、空闲或数据不足时显示 `—`。如果喷嘴速度变化很大、换层、升温等待等，偏差可能显著。
+
+腔体温度不假设固定对象名称。留空 `KALICO_CHAMBER_OBJECT` 时，插件会查询 Moonraker 的 `/printer/objects/list`，自动寻找名称包含 `chamber`、`enclosure` 或“腔体”的温度对象；若自动发现失败则显示 `—`，不影响基础状态。若你的 printer.cfg 传感器名称不同，设置为实际 Moonraker 对象名，例如：
+
+```ini
+KALICO_CHAMBER_OBJECT="temperature_sensor chamber"
+```
+
+对象名称必须与 Moonraker `printer.objects.list` 返回值一致，不支持任意 G-code 或执行表达式。如果只需要其他字段，可取消 `chamber`，避免每次查询额外访问腔体对象。
+
+交互式修改：
+
+```bash
+cd ~/hermes-plugin-kalico-monitor
+bash install.sh --reconfigure
+```
+
+在菜单中选择 **[12] /kalico status 选择显示字段**，输入对应编号勾选/取消，输入 **s** 保存当前选择；**[13] 腔体温度对象**允许指定传感器名称，输入 `-` 恢复自动发现。最终通过 **[11] 确认并保存** 才写入配置。中途选择取消不会更改现有配置，Hermes 已安装插件应更新到包含此功能的版本。
+
+快捷命令从共享 `monitor.env` 动态读取显示设置；如 Hermes 和 Monitor 分属不同用户/主机，需要单独保证文件可读性与路径同步。修改的只是命令显示设置，定时报告、事件路由与 Monitor 告警逻辑不受影响。
+
 ## 1. Monitor 常驻服务参数
 
 | 参数 | 默认值 | 含义及约束 |

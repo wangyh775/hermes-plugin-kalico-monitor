@@ -14,6 +14,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .policy import parse_modes
+from .status_fields import DEFAULT_CONFIG, parse_fields
 
 KEYS = (
     "KALICO_PRINTER_NAME", "MOONRAKER_URL", "MOONRAKER_API_KEY",
@@ -21,6 +22,7 @@ KEYS = (
     "KALICO_ALLOWED_CHAT_IDS", "KALICO_DISCONNECT_SECONDS",
     "KALICO_STALL_MINUTES", "KALICO_PROGRESS_REPORT_MINUTES",
     "KALICO_WATCH_NOZZLE_FORCE", "HERMES_AGENT_WEBHOOK_URL", "KALICO_EVENT_MODES",
+    "KALICO_STATUS_FIELDS", "KALICO_CHAMBER_OBJECT",
 )
 SECRET_KEYS = frozenset({"MOONRAKER_API_KEY", "HERMES_WEBHOOK_SECRET"})
 PLACEHOLDERS = frozenset({"GENERATE_A_LONG_RANDOM_SECRET", "INSECURE_NO_AUTH"})
@@ -29,7 +31,8 @@ GROUPS = {
     "2": ("Hermes Webhook", KEYS[3:5]),
     "3": ("数据库与会话授权", KEYS[5:7]),
     "4": ("监控与通知", KEYS[7:11]),
-    "8": ("LLM 分析与事件策略", KEYS[11:]),
+    "8": ("LLM 分析与事件策略", KEYS[11:13]),
+    "9": ("状态命令显示字段", KEYS[13:]),
 }
 LABELS = {
     "KALICO_PRINTER_NAME": "打印机名称",
@@ -45,6 +48,8 @@ LABELS = {
     "KALICO_WATCH_NOZZLE_FORCE": "喷嘴力监控（0 关闭，1 开启）",
     "HERMES_AGENT_WEBHOOK_URL": "Hermes Agent Webhook 地址（可选）",
     "KALICO_EVENT_MODES": "事件策略（例如 klippy_shutdown=both,nozzle_force_anomaly=both）",
+    "KALICO_STATUS_FIELDS": "状态显示字段（逗号分隔 state,file,progress,nozzle,bed,chamber,elapsed,remaining）",
+    "KALICO_CHAMBER_OBJECT": "腔体温度对象（留空自动发现；如 temperature_sensor chamber）",
 }
 SAFE = re.compile(r"^[A-Za-z0-9_./:@%+,~=-]+$")
 CHAT_ID = re.compile(r"^[A-Za-z0-9_:@.\-]+$")
@@ -71,6 +76,8 @@ def defaults() -> dict[str, str]:
         "KALICO_WATCH_NOZZLE_FORCE": "0",
         "HERMES_AGENT_WEBHOOK_URL": "",
         "KALICO_EVENT_MODES": "",
+        "KALICO_STATUS_FIELDS": DEFAULT_CONFIG,
+        "KALICO_CHAMBER_OBJECT": "",
     }
 
 
@@ -119,6 +126,15 @@ def validate_field(key: str, value: str) -> str:
     elif key == "KALICO_EVENT_MODES":
         parse_modes(value)
         value = ",".join(x.strip() for x in value.split(",") if x.strip())
+    elif key == "KALICO_STATUS_FIELDS":
+        value = ",".join(parse_fields(value))
+    elif key == "KALICO_CHAMBER_OBJECT":
+        # Valid Moonraker thermal-object names: preserve internal spaces.
+        if value and not re.fullmatch(
+            r"(?:temperature_sensor|heater_generic|temperature_fan) [A-Za-z0-9_\-]{1,64}",
+            value,
+        ):
+            raise ValueError("腔体对象应为 temperature_sensor/heater_generic/temperature_fan 加传感器名称")
     elif key == "KALICO_PRINTER_NAME":
         if not value:
             raise ValueError("打印机名称不能为空")
@@ -267,7 +283,7 @@ def wizard(path: Path, ask=input, secret_ask=getpass.getpass, out=print) -> bool
     while True:
         out("\n[1] Moonraker    [2] Hermes Webhook")
         out("[3] 数据与授权    [4] 监控与通知")
-        out("[8] LLM 分析与事件策略")
+        out("[8] LLM 分析与事件策略  [9] /kalico status 显示字段")
         out("[5] 查看摘要      [6] 测试 Moonraker")
         out("[7] 保存退出      [0] 放弃修改")
         choice = ask("请选择：").strip()

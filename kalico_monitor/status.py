@@ -35,3 +35,50 @@ def query_status(url: str, api_key: str = "", timeout: int = 6,
 def query_force_status(url: str, api_key: str = "", timeout: int = 6) -> dict:
     """Query only the optional PR #13 force monitor without affecting base status."""
     return query_status(url, api_key, timeout, objects={"nozzle_force_monitor": None})
+
+
+THERMAL_PREFIXES = ("temperature_sensor ", "heater_generic ", "temperature_fan ")
+
+
+def _available_objects(url: str, api_key: str, timeout: int = 4) -> list[str]:
+    headers = {"X-Api-Key": api_key} if api_key else {}
+    request = urllib.request.Request(url.rstrip("/") + "/printer/objects/list", headers=headers)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(request, timeout=timeout) as response:
+        result = json.load(response)
+    objects = result.get("result", {}).get("objects", [])
+    return objects if isinstance(objects, list) else []
+
+
+def chamber_object(url: str, api_key: str = "", configured: str = "") -> str:
+    """Select only a thermal object; auto-detect a chamber-labelled sensor."""
+    if configured:
+        if not configured.startswith(THERMAL_PREFIXES):
+            raise ValueError("Unsupported chamber thermal object")
+        return configured
+    try:
+        options = _available_objects(url, api_key)
+    except (OSError, ValueError, KeyError, TypeError):
+        return ""
+    for obj in options:
+        if (isinstance(obj, str) and obj.startswith(THERMAL_PREFIXES)
+                and any(word in obj.lower().split(" ", 1)[1]
+                        for word in ("chamber", "enclosure", "腔体"))):
+            return obj
+    return ""
+
+
+def query_status_with_chamber(url: str, api_key: str = "", chamber: str = "",
+                              include_chamber: bool = True) -> dict:
+    """Preserve baseline status if the optional chamber sensor is unavailable."""
+    if not include_chamber:
+        return query_status(url, api_key)
+    obj = chamber_object(url, api_key, chamber)
+    if not obj:
+        return query_status(url, api_key)
+    try:
+        data = query_status(url, api_key, objects={**OBJECTS, obj: None})
+    except (OSError, ValueError, RuntimeError):
+        return query_status(url, api_key)
+    data["_kalico_chamber_object"] = obj
+    return data

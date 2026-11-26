@@ -36,6 +36,19 @@ Kalico + Moonraker --LAN HTTP/WS--> Kalico Monitor (systemd + SQLite)
 | SQLite 双路投递、独立重试与幂等 ID | 已实现 |
 | 通用 `events.yaml` 条件规则、多打印机聚合、AI 自动控制 | 尚未实现 |
 
+## 自定义 /kalico status 显示内容
+
+支持在 `bash install.sh --reconfigure` 的 **[12] 状态显示字段** 中按编号勾选内容，最终通过 **[11] 确认并保存**；**[13]** 可设置腔体温度传感器的 Moonraker 对象名。默认包含打印状态、文件名、打印进度、喷嘴温度、热床温度、腔体温度、已打印时间及预计剩余时间。
+
+配置文件示例：
+
+```ini
+KALICO_STATUS_FIELDS=state,file,progress,nozzle,bed,chamber,elapsed,remaining
+KALICO_CHAMBER_OBJECT=
+```
+
+腔体温度留空时按对象名称尝试自动发现，不支持时显示 `—`。剩余时间使用 `print_duration` 和 G-code 文件进度粗略估算，不代表切片器提供的预测；状态或数据不足时显示 `—`。详见 [配置参考](docs/CONFIGURATION.zh-CN.md)。
+
 ## Linux 一键安装（推荐）
 
 如果 Hermes 已经完成飞书及模型配置，可使用一键安装入口：

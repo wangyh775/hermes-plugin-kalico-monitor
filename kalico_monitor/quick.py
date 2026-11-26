@@ -9,12 +9,14 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .force import format_force
-from .status import query_force_status, query_status
+from .status import query_force_status, query_status, query_status_with_chamber
+from .status_fields import DEFAULT_CONFIG, duration, parse_fields, remaining_time
 
 SUBCOMMANDS = frozenset({"status", "temp", "alerts", "health", "force", "help"})
 CONFIG_KEYS = frozenset({
     "MOONRAKER_URL", "MOONRAKER_API_KEY", "KALICO_MONITOR_DB",
     "KALICO_PRINTER_NAME", "KALICO_ALLOWED_CHAT_IDS",
+    "KALICO_STATUS_FIELDS", "KALICO_CHAMBER_OBJECT",
 })
 HELP = "用法：/kalico [status|temp|alerts|health|force|help]（仅查询，不控制打印机）"
 LOCAL_PLATFORMS = frozenset({"cli", "tui", "desktop", "local"})
@@ -107,13 +109,13 @@ def _degrees(value: Any) -> str:
     return "—" if n is None else f"{n:.1f}°C"
 
 
-def format_status(data: dict, printer: str = "Kalico") -> str:
+def format_status(data: dict, printer: str = "Kalico",
+                  fields: tuple[str, ...] | None = None) -> str:
+    """Format selected fields in declared order; optional fields degrade gracefully."""
     stats = _mapping(data.get("print_stats"))
     hooks = _mapping(data.get("webhooks"))
     virtual = _mapping(data.get("virtual_sdcard"))
-    state = _text(stats.get("state"))
-    klippy = _text(hooks.get("state"))
-    filename = _text(stats.get("filename"))
+    chosen = fields if fields is not None else parse_fields(DEFAULT_CONFIG)
     progress = _number(virtual.get("progress"))
     if progress is None:
         progress_text = "—"
@@ -121,12 +123,20 @@ def format_status(data: dict, printer: str = "Kalico") -> str:
         progress_text = f"{progress * 100:.1f}%"
     else:
         progress_text = "—（异常值）"
-    return (f"🖨️ {printer} · 实时状态\n"
-            f"打印：{state}｜Klippy：{klippy}\n"
-            f"文件：{filename}\n进度：{progress_text}\n"
-            f"喷嘴：{_temperature(data, 'extruder')}\n"
-            f"热床：{_temperature(data, 'heater_bed')}")
-
+    chamber_key = data.get("_kalico_chamber_object", "")
+    chamber = _mapping(data.get(chamber_key)) if isinstance(chamber_key, str) else {}
+    chamber_temp = _degrees(chamber.get("temperature"))
+    values = {
+        "state": f"打印：{_text(stats.get('state'))}｜Klippy：{_text(hooks.get('state'))}",
+        "file": f"文件：{_text(stats.get('filename'))}",
+        "progress": f"进度：{progress_text}",
+        "nozzle": f"喷嘴：{_temperature(data, 'extruder')}",
+        "bed": f"热床：{_temperature(data, 'heater_bed')}",
+        "chamber": f"腔体：{chamber_temp}",
+        "elapsed": f"已打印：{duration(stats.get('print_duration'))}",
+        "remaining": f"预计剩余：{remaining_time(stats, virtual)}",
+    }
+    return "\n".join([f"🖨️ {printer} · 实时状态", *(values[key] for key in chosen)])
 
 def _temperature(status: dict, name: str) -> str:
     obj = _mapping(status.get(name))
@@ -204,9 +214,20 @@ def execute(raw_args: str, *, get_secret: Callable[[str], str] | None = None,
     try:
         if subcommand in ("status", "temp"):
             url = setting("MOONRAKER_URL", get_secret) or "http://127.0.0.1:7125"
-            data = query(url, setting("MOONRAKER_API_KEY", get_secret))
-            return (format_status(data, printer) if subcommand == "status"
-                    else format_temp(data, printer))
+            api_key = setting("MOONRAKER_API_KEY", get_secret)
+            if subcommand == "temp":
+                return format_temp(query(url, api_key), printer)
+            fields = parse_fields(setting("KALICO_STATUS_FIELDS", get_secret)
+                                  or DEFAULT_CONFIG)
+            if query is query_status:
+                data = query_status_with_chamber(
+                    url, api_key,
+                    chamber=setting("KALICO_CHAMBER_OBJECT", get_secret),
+                    include_chamber="chamber" in fields,
+                )
+            else:
+                data = query(url, api_key)
+            return format_status(data, printer, fields)
         if subcommand == "force":
             url = setting("MOONRAKER_URL", get_secret) or "http://127.0.0.1:7125"
             data = force_query(url, setting("MOONRAKER_API_KEY", get_secret))
