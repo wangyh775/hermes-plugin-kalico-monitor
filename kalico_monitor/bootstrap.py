@@ -473,7 +473,7 @@ def select_status_fields(current: str, ask=input, out=print) -> str:
     selected = list(parse_fields(current))
     keys = list(FIELD_LABELS)
     while True:
-        out("\\n/kalico status 显示字段（输入编号切换）")
+        out("\n/kalico status 显示字段（输入编号切换）")
         for index, key in enumerate(keys, 1):
             marker = "x" if key in selected else " "
             out(f"[{index}] [{marker}] {FIELD_LABELS[key]} ({key})")
