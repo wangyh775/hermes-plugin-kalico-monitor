@@ -242,6 +242,23 @@ def collect(root: Path, hermes_home: Path, env_path: Path,
                                     "仍需端到端送达验证"))
         except (KeyError, TypeError, ValueError) as exc:
             checks.append(Check("飞书通知目标", "FAIL", str(exc)))
+        # Custom Direct fields require the new Hermes route prompt.
+        # Old prompts remain functional but ignore the new 'message' body field.
+        try:
+            from .custom_config import DEFAULT_MESSAGE_FIELDS, load_extensions
+            from .monitor_cfg import cfg_path
+            custom_fields, _ = load_extensions(cfg_path(env_path))
+            customized = (len(custom_fields) > 1 or
+                          custom_fields.get("default") != DEFAULT_MESSAGE_FIELDS)
+            if customized:
+                prompt = config["platforms"]["webhook"]["extra"]["routes"]["kalico-alert"].get("prompt", "")
+                checks.append(Check("Direct 消息模板",
+                                    "PASS" if "{message}" in prompt else "WARN",
+                                    "已引用 {message} 模板" if "{message}" in prompt
+                                    else "Hermes 仍使用旧模板；执行 kalico-monitor config --apply"))
+        except (KeyError, TypeError, ValueError, OSError) as exc:
+            checks.append(Check("Direct 消息模板", "WARN",
+                                f"未能确认模板同步：{type(exc).__name__}"))
         if network:
             try:
                 check_moonraker(values["MOONRAKER_URL"], values["MOONRAKER_API_KEY"])
