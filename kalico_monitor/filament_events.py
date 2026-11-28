@@ -80,11 +80,12 @@ def detail(event: dict) -> str:
 class FilamentEventTracker:
     def __init__(self, store: Outbox):
         self.store = store
+        self.last_events = None
 
     def observe(self, status: dict, state: dict, *, source_method=None) -> int:
         obj = status.get(OBJECT)
         events = obj.get("events") if isinstance(obj, dict) else None
-        if not isinstance(events, list):
+        if not isinstance(events, list) or events is self.last_events:
             return 0
         count = 0
         cursor = self.store.get_meta("filament_cursors_v1", {})
@@ -118,7 +119,10 @@ class FilamentEventTracker:
                           filename=filename, detail=detail(event),
                           severity=EVENTS[kind][1], source_id=event["event_id"],
                           payload=event, trigger="extension_journal", source_method=source_method)
+            if seq <= last and self.store.has_alert(alert):
+                continue
             if seq > last:
                 cursor[boot] = seq
             count += int(self.store.journal_checkpoint(cursor, alert, gap))
+        self.last_events = events
         return count

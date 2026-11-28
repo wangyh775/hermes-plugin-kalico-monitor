@@ -74,6 +74,5 @@ async def deliver(session: aiohttp.ClientSession, url: str, secret: str,
     accepted = {"accepted", "duplicate"} if route == "agent" else {"delivered", "duplicate"}
     if (not isinstance(result, dict) or not isinstance(result.get("status"), str)
             or result["status"] not in accepted):
-        status = result.get("status") if isinstance(result, dict) else type(result).__name__
-        raise ValueError(f"Webhook did not confirm delivery: {status}")
+        raise ValueError("Webhook did not confirm delivery")
     return result

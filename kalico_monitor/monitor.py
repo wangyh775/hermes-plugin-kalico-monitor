@@ -82,6 +82,7 @@ class Monitor:
         self.disconnect_method: str | None = None
         self.subscription_active = False
         self.clock_id = uuid.uuid4().hex
+        self.connection_epoch = 0
         self.live_socket = None
         self.last_transport_seen = None
         self.probe_pending = None
@@ -144,6 +145,17 @@ class Monitor:
             self.store.report_checkpoint("capability_state", state, alert)
 
     def _save(self, current: dict, alerts: list[Alert]):
+        closed = []
+        if current.get("klippy_state") == "ready" and self.subscription_active:
+            for key, kind, prefix in (("shutdown_open_incident", "klippy_shutdown_recovered", "klippy_shutdown"),
+                                      ("klippy_open_incident", "klippy_recovered", "klippy")):
+                opened = self.store.get_meta(key, {})
+                if opened.get("id"):
+                    generation = opened["id"]
+                    alerts.append(Alert(kind, generation, "", "Klippy ready; prior fault may not have been delivered",
+                                        "info", payload={"incident_id": generation,
+                                        "incident_key": f"{prefix}:{generation}"}, trigger="state_recovery"))
+                    closed.append(key)
         previous = self.last_stored_state
         important = (previous is None or
                      any(current.get(k) != previous.get(k) for k in
@@ -157,7 +169,9 @@ class Monitor:
                     alerts[index] = alert = replace(alert, payload={**(alert.payload or {}),
                         'incident_id': alert.generation, 'incident_key': key})
                     incident = {'id': alert.generation, 'alert_id': self.store.alert_id(alert), 'key': key}
-            self.store.transition(current, alerts, incident)
+            self.store.transition(current, alerts, incident, closed=closed)
+            if 'klippy_open_incident' in closed:
+                self.klippy_down_alerted = False
             self.last_stored_state = dict(current)
             self.last_store_at = time.monotonic()
             for alert in alerts:
@@ -269,6 +283,13 @@ class Monitor:
                     await deliver(session, url, self.settings.hermes_secret,
                                   self.settings.printer, item, route=route,
                                   message_fields=self.settings.message_fields, **options)
+                except aiohttp.ClientResponseError as exc:
+                    if exc.status in (400, 413, 422):
+                        self.store.route_dead(item["id"], route, f"HTTP {exc.status}")
+                    else:
+                        self.store.route_failed(item["id"], route, f"HTTP {exc.status}")
+                    self.store.set_meta(f"webhook_health_{route}", {"state": "rejected", "at": time.time(),
+                                                                  "http_status": exc.status})
                 except PermanentPayloadError as exc:
                     self.store.route_dead(item['id'], route, str(exc))
                     self.store.set_meta(f'webhook_health_{route}', {'state': 'invalid_payload', 'at': time.time()})
@@ -328,18 +349,6 @@ class Monitor:
     def _klippy_recovered(self, source_method=None):
         self.klippy_down_since = None
         self.disconnect_method = None
-        shutdown = self.store.get_meta('shutdown_open_incident', {})
-        if shutdown.get('id'):
-            alert = Alert('klippy_shutdown_recovered', shutdown['id'], '',
-                          'Klippy ready after shutdown', 'info',
-                          payload={'incident_id': shutdown['id'], 'incident_key': shutdown['key']},
-                          source_method=source_method, trigger='state_recovery')
-            self.store.report_checkpoint('shutdown_open_incident', {}, alert)
-        if self.klippy_down_alerted:
-            self._system_alert("klippy_recovered", self.klippy_down_id,
-                               "Moonraker reports Kalico ready again; check before restarting print", "info",
-                               source_method=source_method, trigger="state_recovery")
-            self.klippy_down_alerted = False
 
     def _finish_shutdown(self, processor, hooks=None, cause=None):
         if hooks is None and self.shutdown_query_since is None:
@@ -455,6 +464,10 @@ class Monitor:
                 result.append(item)
         return result
 
+    def _check_epoch(self, ws, epoch):
+        if self.transport_lost or self.live_socket is not ws or self.connection_epoch != epoch:
+            raise ConnectionError("expired connection epoch")
+
     async def _listen(self, session: aiohttp.ClientSession):
         headers = {"X-Api-Key": self.settings.moonraker_api_key} if self.settings.moonraker_api_key else {}
         processor = EventProcessor(previous=self.store.get_state(),
@@ -465,17 +478,16 @@ class Monitor:
         async with session.ws_connect(self.settings.ws_url, headers=headers,
                                       heartbeat=20) as ws:
             self.clock_id = uuid.uuid4().hex
+            self.connection_epoch += 1
+            epoch = self.connection_epoch
             self.live_socket = ws
             self.last_transport_seen = time.monotonic()
             self.probe_pending = None
             self.transport_lost = False
             LOG.info("Moonraker connected; subscribing to status")
             self.store.set_meta("transport_connected", True)
+            self.store.set_meta("rpc_health", "unconfirmed")
             self._heartbeat()
-            if self.ws_offline_notified:
-                self._system_alert("moonraker_recovered", self.ws_offline_id, "Moonraker transport restored", "info")
-            self.ws_offline_notified = False
-            self.ws_offline_since = None
             subscription_index = 0
             request_id = 1
             pending = True
@@ -493,6 +505,7 @@ class Monitor:
                     # Rediscover optional objects after fallback, not just on reconnect.
                     if not self.subscription_active or self.store.get_meta("capability_state", {}).get("missing"):
                         rule_objects = await self._rule_objects(session, headers)
+                        self._check_epoch(ws, epoch)
                         subscriptions = self._subscriptions(rule_objects)
                         subscription_index = 0
                     request_id = max(10, request_id + 1)
@@ -500,12 +513,20 @@ class Monitor:
                     requested_at = last_refresh = time.monotonic()
                     await ws.send_json({**subscriptions[subscription_index], "id": request_id})
                 if pending and time.monotonic() - requested_at > 20:
-                    raise TimeoutError("Moonraker subscription reply timed out")
+                    if self.last_transport_seen is not None and self.last_transport_seen > requested_at:
+                        self._invalidate_subscription("degraded")
+                        self._capabilities({})
+                        pending = False
+                        last_refresh = time.monotonic()
+                    else:
+                        raise TimeoutError("Moonraker subscription reply timed out")
                 try:
                     msg = await ws.receive(timeout=5)
                 except asyncio.TimeoutError:
+                    self._check_epoch(ws, epoch)
                     self._tick(processor)
                     continue
+                self._check_epoch(ws, epoch)
                 if msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR,
                                 aiohttp.WSMsgType.CLOSE):
                     self._finish_shutdown(processor)
@@ -521,8 +542,16 @@ class Monitor:
                     continue
                 packet_received_at = time.time()
                 self.last_transport_seen = time.monotonic()
-                self.probe_pending = None
                 reply_id = packet.get("id")
+                if packet.get("jsonrpc") == "2.0" or "method" in packet or "result" in packet or "error" in packet:
+                    self.probe_pending = None
+                    if self.store.get_meta("rpc_health") != "responsive":
+                        self.store.set_meta("rpc_health", "responsive")
+                    if self.ws_offline_notified:
+                        self._system_alert("moonraker_recovered", self.ws_offline_id,
+                                           "Moonraker RPC responsive; prior fault may not have been delivered", "info")
+                    self.ws_offline_notified = False
+                    self.ws_offline_since = None
                 if isinstance(reply_id, str) and reply_id.startswith("monitor-probe-"):
                     self._tick(processor)
                     continue
@@ -558,6 +587,7 @@ class Monitor:
                     last_refresh = time.monotonic()
                     if snapshot['print_stats'].get('state') in ('printing', 'paused'):
                         identity = await self._active_job(session, headers, snapshot['print_stats'].get('filename'))
+                        self._check_epoch(ws, epoch)
                         if identity:
                             snapshot = {**snapshot, '_monitor_job': {'identity': identity}}
                     self._process_snapshot(processor, snapshot, subscription_cause,
@@ -618,6 +648,7 @@ class Monitor:
                     self._finish_shutdown(processor)
                     self._invalidate_subscription()
                     rule_objects = await self._rule_objects(session, headers)
+                    self._check_epoch(ws, epoch)
                     subscriptions = self._subscriptions(rule_objects)
                     subscription_index = 0
                     requested_at = time.monotonic()
@@ -663,6 +694,7 @@ class Monitor:
                 self.probe_pending = None
                 self._invalidate_subscription("disconnected")
                 self.store.set_meta("transport_connected", False)
+                self.store.set_meta("rpc_health", "unresponsive")
                 LOG.warning("Moonraker WebSocket problem: %s", type(exc).__name__)
                 if self.ws_offline_since is None:
                     self.ws_offline_since = time.monotonic()
@@ -684,9 +716,11 @@ class Monitor:
         elapsed = time.monotonic() - seen
         if self.probe_pending and elapsed >= self.settings.disconnect_seconds:
             self.transport_lost = True
+            self.connection_epoch += 1
             self.ws_offline_since = seen
             self._invalidate_subscription("disconnected")
             self.store.set_meta("transport_connected", False)
+            self.store.set_meta("rpc_health", "unresponsive")
             # Reader checks transport_lost on every iteration, even if close stalls.
             try:
                 await asyncio.wait_for(ws.close(), timeout=2)
@@ -702,13 +736,8 @@ class Monitor:
                 pass
 
     async def _communication_watchdog(self):
-        last_maintenance = time.monotonic()
         while True:
             await self._probe_transport()
-            if time.monotonic() - last_maintenance >= 60:
-                self.store.archive_info(time.time() - 7 * 86400, limit=1000)
-                self.store.update_storage_health()
-                last_maintenance = time.monotonic()
             if (self.ws_offline_since is not None and not self.ws_offline_notified
                     and time.monotonic() - self.ws_offline_since >= self.settings.disconnect_seconds):
                 self.ws_offline_id = self._new_incident("moonraker_incidents")
@@ -716,12 +745,19 @@ class Monitor:
                 self.ws_offline_notified = True
             await asyncio.sleep(0.5)
 
+    async def _maintenance(self):
+        while True:
+            await asyncio.sleep(60)
+            # Short transactions, separate scheduling from the watchdog.
+            self.store.archive_info(time.time() - 7 * 86400, limit=100)
+            self.store.update_storage_health()
+
     async def run(self):
         headers = {"User-Agent": "hermes-plugin-kalico-monitor/0.3"}
         async with aiohttp.ClientSession(headers=headers, trust_env=False,
                                          timeout=aiohttp.ClientTimeout(total=10, connect=5, sock_connect=5)) as session:
             await self._supervise(self._dispatch(session), self._listen_forever(session),
-                                  self._communication_watchdog())
+                                  self._communication_watchdog(), self._maintenance())
 
 
 

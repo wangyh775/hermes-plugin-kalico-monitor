@@ -138,9 +138,9 @@ def compare(previous: dict | None, sample: dict, now: float, stall_minutes: int 
             once("complete", f"Print completed: {sample['filename'] or '(unknown)'}")
         elif new_print == "error" and not stopped:
             once("error", sample["message"] or "Print entered error state")
-        elif new_print == "paused" and old_print == "printing" and not stopped:
+        elif new_print == "paused" and old_print == "printing" and not stopped and not new_job:
             transition("paused", f"Print paused: {sample['filename'] or '(unknown)'}")
-        elif new_print == "printing" and old_print == "paused" and not stopped:
+        elif new_print == "printing" and old_print == "paused" and not stopped and not new_job:
             transition("resumed", f"Print resumed: {sample['filename'] or '(unknown)'}")
         elif new_print == "cancelled":
             once("cancelled", f"Print cancelled: {sample['filename'] or '(unknown)'}")
