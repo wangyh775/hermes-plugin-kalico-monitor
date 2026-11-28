@@ -1,6 +1,4 @@
 """Regression coverage for PR #19 configuration and delivery review fixes."""
-from pathlib import Path
-
 import pytest
 
 from kalico_monitor import bootstrap, setup
