@@ -51,4 +51,4 @@ def test_malformed_events_and_subscription(tmp_path):
         store.close()
     assert subscribe_request(True)["params"]["objects"]["filament_force"] == ["events"]
     assert "filament_force" not in subscribe_request(False)["params"]["objects"]
-    assert "nozzle_force_monitor" not in subscribe_request(True, filament_only=True)["params"]["objects"]
+    assert "nozzle_force_monitor" not in subscribe_request(True)["params"]["objects"]

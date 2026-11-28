@@ -753,10 +753,13 @@ class Monitor:
             await asyncio.sleep(0.5)
 
     async def _maintenance(self):
+        last_archive = time.monotonic()
         while True:
-            await asyncio.sleep(3600)
-            self.store.archive_info(time.time() - 7 * 86400, limit=1000)
+            await asyncio.sleep(60)
             self.store.update_storage_health()
+            if time.monotonic() - last_archive >= 3600:
+                self.store.archive_info(time.time() - 7 * 86400, limit=1000)
+                last_archive = time.monotonic()
 
     async def run(self):
         headers = {"User-Agent": "hermes-plugin-kalico-monitor/0.3"}

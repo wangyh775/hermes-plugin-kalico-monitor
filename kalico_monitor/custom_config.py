@@ -208,6 +208,7 @@ def load_sections(path: Path, parser=None):
     handlers = parse_handlers(parser, rules, templates)
     return messages, tuple(rules), handlers, reliability, templates
 
+
 def load_handlers(path: Path):
     return load_sections(path)[2]
 

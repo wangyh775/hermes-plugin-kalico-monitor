@@ -10,7 +10,14 @@ from typing import Any, Callable
 
 from .force import format_force
 from .status import query_force_status, query_status, query_status_with_chamber
-from .status_fields import DEFAULT_CONFIG, chamber_status, duration, parse_fields, remaining_time, temperature_values
+from .status_fields import (
+    DEFAULT_CONFIG,
+    chamber_status,
+    duration,
+    parse_fields,
+    remaining_time,
+    temperature_values,
+)
 from .status_fields import number as _number
 
 SUBCOMMANDS = frozenset({"status", "temp", "alerts", "health", "force", "help"})
