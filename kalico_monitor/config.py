@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 
 from .custom_config import EventRule, load_extensions, load_handlers
 from .handlers import HandlerConfig
+from .handlers import agent_url as resolve_agent_url
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,8 @@ class Settings:
                 raise ValueError("HERMES_AGENT_WEBHOOK_URL is invalid")
             if agent.scheme == "http" and agent.hostname not in {"127.0.0.1", "localhost", "::1"}:
                 raise ValueError("Agent Webhook must use HTTPS except for localhost")
+        for handler in handler_config.handlers.values():
+            resolve_agent_url(agent_url, handler)
         modes = get("KALICO_EVENT_MODES", "").strip()
         from .policy import parse_modes
         parse_modes(modes)

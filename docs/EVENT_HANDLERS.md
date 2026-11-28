@@ -72,3 +72,7 @@ Webhook accepted means queued for inference, not completed. Tests are synthetic.
 
 配置修改后必须 config --apply 同步并重启；不静默回退至统一 Agent 路由。
 待重试消息使用当前有效配置；未实现处理结果回调、跨阶段关联或动作执行。
+
+The offline installer self-check (`bash install.sh --check`) compares generated
+routes with local configuration; it does not establish Skill existence or a live
+Agent response. 安装自检检查静态路由同步，不代表实机推理或飞书送达。

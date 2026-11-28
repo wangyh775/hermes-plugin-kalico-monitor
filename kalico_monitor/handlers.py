@@ -146,7 +146,7 @@ def sync_routes(routes: dict, config: HandlerConfig, secret: str) -> None:
         if "deliver_extra" in base:
             route["deliver_extra"] = dict(base["deliver_extra"])
         desired[handler.route] = route
-    for key, route in desired.items():
+    for key in desired:
         if key in routes and not is_managed(key, routes[key]):
             raise ValueError(f"Handler Webhook 路由冲突：{key}")
     for key in list(routes):
@@ -159,3 +159,12 @@ def sync_routes(routes: dict, config: HandlerConfig, secret: str) -> None:
 def is_managed(key, route):
     return (key.startswith(ROUTE_PREFIX) and isinstance(route, dict)
             and str(route.get("prompt", "")).startswith(MARKER + "\n"))
+
+def verify_routes(routes: dict, config: HandlerConfig, secret: str) -> None:
+    """Detect missing, stale or modified managed routes without logging secrets."""
+    import copy
+
+    expected = copy.deepcopy(routes)
+    sync_routes(expected, config, secret)
+    if expected != routes:
+        raise ValueError("Handler 路由未同步；执行 kalico-monitor config --apply")

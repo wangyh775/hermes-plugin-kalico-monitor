@@ -245,10 +245,11 @@ def collect(root: Path, hermes_home: Path, env_path: Path,
         # Custom Direct fields require the new Hermes route prompt.
         # Old prompts remain functional but ignore the new 'message' body field.
         try:
-            from .custom_config import DEFAULT_MESSAGE_FIELDS, load_extensions
+            from .custom_config import DEFAULT_MESSAGE_FIELDS, load_extensions, load_handlers
             from .monitor_cfg import cfg_path
             custom_fields, _ = load_extensions(cfg_path(env_path))
-            customized = (len(custom_fields) > 1 or
+            handler_config = load_handlers(cfg_path(env_path))
+            customized = (bool(handler_config.templates) or len(custom_fields) > 1 or
                           custom_fields.get("default") != DEFAULT_MESSAGE_FIELDS)
             if customized:
                 prompt = config["platforms"]["webhook"]["extra"]["routes"]["kalico-alert"].get("prompt", "")
@@ -259,6 +260,17 @@ def collect(root: Path, hermes_home: Path, env_path: Path,
         except (KeyError, TypeError, ValueError, OSError) as exc:
             checks.append(Check("Direct 消息模板", "WARN",
                                 f"未能确认模板同步：{type(exc).__name__}"))
+        try:
+            from .custom_config import load_handlers
+            from .handlers import verify_routes
+            from .monitor_cfg import cfg_path
+            handler_config = load_handlers(cfg_path(env_path))
+            if handler_config.handlers:
+                verify_routes(config["platforms"]["webhook"]["extra"]["routes"],
+                              handler_config, values["HERMES_WEBHOOK_SECRET"])
+                checks.append(Check("Handler 路由", "PASS", "配置与 Hermes 静态路由一致"))
+        except (KeyError, TypeError, ValueError, OSError):
+            checks.append(Check("Handler 路由", "FAIL", "路由未同步或无效；执行 config --apply"))
         if network:
             try:
                 check_moonraker(values["MOONRAKER_URL"], values["MOONRAKER_API_KEY"])

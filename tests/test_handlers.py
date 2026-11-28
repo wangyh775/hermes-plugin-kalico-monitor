@@ -1,10 +1,15 @@
+import asyncio
 import json
 
 import pytest
 
+from kalico_monitor.config import Settings
 from kalico_monitor.custom_config import load_handlers, preserved_extension_text
-from kalico_monitor.handlers import agent_url, sync_routes
+from kalico_monitor.events import Alert
+from kalico_monitor.handlers import agent_url, sync_routes, verify_routes
+from kalico_monitor.monitor import Monitor
 from kalico_monitor.notifier import make_request
+from kalico_monitor.storage import Outbox
 
 CFG = """[handler JAM]
 skills: jam-diagnosis, system-diagnosis
@@ -95,3 +100,52 @@ def test_direct_template_is_literal(tmp_path):
     body, _ = make_request(alert, "secret", "PEEK", timestamp=100, route="agent",
                            message_templates=cfg.templates)
     assert "message" not in json.loads(body)
+
+
+@pytest.mark.asyncio
+async def test_both_dispatch_uses_specific_handler(tmp_path, monkeypatch):
+    path = tmp_path / "monitor.cfg"
+    path.write_text(CFG)
+    cfg = load_handlers(path)
+    direct = "http://127.0.0.1:8644/webhooks/kalico-alert"
+    agent = "http://127.0.0.1:8644/webhooks/kalico-analysis"
+    settings = Settings(
+        printer="PEEK", moonraker_url="http://localhost:7125", moonraker_api_key="",
+        hermes_url=direct, hermes_secret="secret", sqlite_path=tmp_path / "events.db",
+        disconnect_seconds=25, stall_minutes=0, hermes_agent_url=agent,
+        event_modes="filament_jam_confirmed=both", handler_config=cfg,
+    )
+    db = Outbox(settings.sqlite_path, settings.printer)
+    db.enqueue(Alert("filament_jam_confirmed", 1, "a", "jam", "critical"))
+    sent = []
+
+    async def fake_deliver(_session, url, _secret, _printer, _item, **kwargs):
+        sent.append((kwargs["route"], url))
+        return {"status": "accepted" if kwargs["route"] == "agent" else "delivered"}
+
+    monkeypatch.setattr("kalico_monitor.monitor.deliver", fake_deliver)
+    task = asyncio.create_task(Monitor(settings, db)._dispatch(None))
+    try:
+        await asyncio.sleep(0.06)
+        handler = cfg.for_event("filament_jam_confirmed")
+        assert set(sent) == {("direct", direct), ("agent", agent_url(agent, handler))}
+        assert not db.pending_routes()
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        db.close()
+
+
+def test_verify_routes_detects_drift(tmp_path):
+    path = tmp_path / "monitor.cfg"
+    path.write_text(CFG)
+    cfg = load_handlers(path)
+    routes = {"kalico-analysis": {}}
+    with pytest.raises(ValueError, match="未同步"):
+        verify_routes(routes, cfg, "secret")
+    sync_routes(routes, cfg, "secret")
+    verify_routes(routes, cfg, "secret")
+    routes[cfg.for_event("filament_jam_confirmed").route]["toolsets"] = ["terminal"]
+    with pytest.raises(ValueError, match="未同步"):
+        verify_routes(routes, cfg, "secret")
