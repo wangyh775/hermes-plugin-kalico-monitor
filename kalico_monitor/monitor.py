@@ -75,6 +75,59 @@ class Monitor:
         self.ws_offline_id = 0
         self.shutdown_query_since: float | None = None
         self.disconnect_method: str | None = None
+        self.subscription_active = False
+        self.field_seen: dict[tuple[str, str], float] = {}
+        for prefix in ("klippy", "moonraker"):
+            incident = store.get_meta(f"{prefix}_open_incident", {})
+            if isinstance(incident, dict) and incident.get("id"):
+                if prefix == "klippy":
+                    self.klippy_down_alerted = True
+                    self.klippy_down_id = incident["id"]
+                else:
+                    self.ws_offline_notified = True
+                    self.ws_offline_id = incident["id"]
+        self._invalidate_subscription("starting")
+
+    def _invalidate_subscription(self, state="subscribing"):
+        self.subscription_active = False
+        self.last_status_received_at = None
+        self.field_seen.clear()
+        self.rule_engine.suspend()
+        self.reporter.suspend()
+        self.store.set_meta("subscription_health", {"state": state, "missing": []})
+
+    def _remember_fields(self, update):
+        now = time.monotonic()
+        for obj, fields in update.items():
+            if isinstance(fields, dict):
+                for field in fields:
+                    self.field_seen[(obj, field)] = now
+
+    def _capabilities(self, snapshot):
+        required = set(self.rule_engine.objects)
+        if self.settings.watch_nozzle_force:
+            required.add(FILAMENT_OBJECT)
+        missing = {name for name in required if not isinstance(snapshot.get(name), dict)}
+        if self.settings.watch_nozzle_force and FILAMENT_OBJECT not in missing:
+            if not isinstance(snapshot[FILAMENT_OBJECT].get("events"), list):
+                missing.add(FILAMENT_OBJECT + ".events")
+        from .rule_engine import numeric_field
+        for rule in self.settings.event_rules:
+            if numeric_field(snapshot, rule.object, rule.field) is None:
+                missing.add(f"{rule.object}.{rule.field}")
+        missing = sorted(missing)
+        old = self.store.get_meta("capability_state", {}).get("missing", [])
+        state = {"state": "degraded" if missing else "active",
+                 "missing": missing, "objects": sorted(snapshot)}
+        self.store.set_meta("subscription_health", state)
+        if missing != old:
+            seq = self._new_incident("capability_incidents")
+            kind = "monitor_degraded" if missing else "monitor_recovered"
+            alert = Alert(kind, seq, "", ", ".join(missing) if missing else
+                          "Optional monitoring capabilities restored",
+                          "warning" if missing else "info",
+                          payload={"missing": missing}, trigger="subscription")
+            self.store.report_checkpoint("capability_state", state, alert)
 
     def _save(self, current: dict, alerts: list[Alert]):
         previous = self.last_stored_state
@@ -114,11 +167,44 @@ class Monitor:
                       trigger: str | None = None):
         event = Alert(kind=kind, generation=generation, filename="", detail=detail,
                       severity=severity, source_method=source_method, trigger=trigger)
-        self.store.enqueue(event)
+        incident_keys = {
+            "klippy_disconnected": ("klippy", True),
+            "klippy_recovered": ("klippy", False),
+            "moonraker_unreachable": ("moonraker", True),
+            "moonraker_recovered": ("moonraker", False),
+        }
+        if kind in incident_keys:
+            prefix, opened = incident_keys[kind]
+            self.store.report_checkpoint(
+                f"{prefix}_open_incident",
+                {"id": generation, "opened_at": time.time()} if opened else {}, event)
+        else:
+            self.store.enqueue(event)
         LOG.warning("queued %s %s", kind, detail)
 
     async def _dispatch(self, session: aiohttp.ClientSession):
+        await self._supervise(*(self._dispatch_route(session, route)
+                                for route in ("direct", "agent")))
+
+    @staticmethod
+    async def _supervise(*coroutines):
+        tasks = [asyncio.create_task(coro) for coro in coroutines]
+        try:
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                task.result()
+            raise RuntimeError("Monitor worker exited unexpectedly")
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _dispatch_route(self, session, route):
+        heartbeat_at = float("-inf")
         while True:
+            if time.monotonic() - heartbeat_at >= 15:
+                self.store.set_meta(f"dispatcher_heartbeat_{route}", time.time())
+                heartbeat_at = time.monotonic()
             for item in self.store.unrouted(limit=30):
                 routes = routes_for(item["kind"], self.event_modes)
                 # Persist both tasks even when the analysis endpoint is absent.
@@ -126,8 +212,7 @@ class Monitor:
                 self.store.ensure_routes(item["id"], routes)
                 if not routes:
                     LOG.info("notification suppressed: kind=%s id=%s", item["kind"], item["id"])
-            for item in self.store.pending_routes(limit=12):
-                route = item["route"]
+            for item in self.store.pending_routes(limit=1, route=route):
                 url = self.settings.hermes_agent_url if route == "agent" else self.settings.hermes_url
                 if route == "agent":
                     handler = self.settings.handler_config.for_event(item["kind"])
@@ -156,17 +241,21 @@ class Monitor:
                     self.store.route_delivered(item["id"], route)
                     LOG.info("notification accepted: kind=%s id=%s route=%s",
                          item["kind"], item["id"], route)
-            await asyncio.sleep(2)
+            await asyncio.sleep(0.2)
 
     def _process_snapshot(self, processor: EventProcessor, snapshot: dict):
         self._heartbeat()
         self.last_status_received_at = time.monotonic()
+        self.subscription_active = True
+        self.field_seen.clear()
+        self._remember_fields(snapshot)
+        self._capabilities(snapshot)
         if self.ws_offline_notified:
             self._system_alert("moonraker_recovered", self.ws_offline_id,
                                "Moonraker subscription restored", "info")
         self.ws_offline_since = None
         self.ws_offline_notified = False
-        state, alerts = processor.set_snapshot(snapshot, time.time())
+        state, alerts = processor.set_snapshot(snapshot, time.monotonic())
         self._record(processor, state, alerts)
         hooks = snapshot.get("webhooks", {})
         if isinstance(hooks, dict) and hooks.get("state") == "ready":
@@ -201,25 +290,27 @@ class Monitor:
             delta = {"webhooks": {"state": "shutdown", "state_message":
                         "Kalico Shutdown event received; state query did not return details"}}
             if processor.has_snapshot:
-                current, alerts = processor.apply_update(delta, time.time(), source_method="notify_klippy_shutdown",
+                current, alerts = processor.apply_update(delta, time.monotonic(), source_method="notify_klippy_shutdown",
                                                          trigger="shutdown_query_timeout")
             else:
-                current, alerts = processor.set_snapshot(delta, time.time(), source_method="notify_klippy_shutdown",
+                current, alerts = processor.set_snapshot(delta, time.monotonic(), source_method="notify_klippy_shutdown",
                                                          trigger="shutdown_query_timeout")
             self._record(processor, current, alerts)
-        if processor.has_snapshot:
-            current, alerts = processor.evaluate(time.time())
-            self._record(processor, current, alerts)
+        if self.subscription_active and processor.has_snapshot:
             connected = (
                 self.klippy_down_since is None
                 and self.shutdown_query_since is None
                 and self.last_status_received_at is not None
                 and time.monotonic() - self.last_status_received_at <= 120
             )
+            fresh = time.monotonic()
+            progress_seen = self.field_seen.get(("virtual_sdcard", "file_position"), float("-inf"))
+            current, alerts = processor.evaluate(fresh, allow_stall=connected and fresh - progress_seen <= 120)
+            self._record(processor, current, alerts)
             if self.reporter.evaluate(current, processor.status, time.time(), connected=connected):
                 LOG.info("periodic progress report queued")
             if self.rule_engine.evaluate(
-                processor.status, time.time(),
+                processor.status, time.monotonic(), field_seen=self.field_seen,
                 connected=connected and current.get("klippy_state") == "ready",
                 generation=current.get("generation", 0),
                 filename=current.get("filename", ""),
@@ -270,16 +361,25 @@ class Monitor:
         headers = {"X-Api-Key": self.settings.moonraker_api_key} if self.settings.moonraker_api_key else {}
         processor = EventProcessor(previous=self.store.get_state(),
                                    stall_minutes=self.settings.stall_minutes)
+        self._invalidate_subscription()
         rule_objects = await self._rule_objects(session, headers)
         subscriptions = self._subscriptions(rule_objects)
         async with session.ws_connect(self.settings.ws_url, headers=headers,
                                       heartbeat=20) as ws:
             LOG.info("Moonraker connected; subscribing to status")
             subscription_index = 0
-            await ws.send_json(subscriptions[subscription_index])
+            request_id = 1
+            pending = True
+            await ws.send_json({**subscriptions[subscription_index], "id": request_id})
             requested_at = time.monotonic()
+            last_refresh = requested_at
             while True:
-                if not processor.has_snapshot and time.monotonic() - requested_at > 20:
+                if self.subscription_active and not pending and time.monotonic() - last_refresh >= 30:
+                    request_id = max(10, request_id + 1)
+                    pending = True
+                    requested_at = last_refresh = time.monotonic()
+                    await ws.send_json({**subscriptions[subscription_index], "id": request_id})
+                if pending and time.monotonic() - requested_at > 20:
                     raise TimeoutError("Moonraker subscription reply timed out")
                 try:
                     msg = await ws.receive(timeout=5)
@@ -299,7 +399,7 @@ class Monitor:
                 if not isinstance(packet, dict):
                     continue
                 reply_id = packet.get("id")
-                if reply_id == 1:
+                if pending and reply_id == request_id:
                     # A subscription reply is the complete initial snapshot.
                     if "error" in packet:
                         if subscription_index + 1 < len(subscriptions):
@@ -307,13 +407,19 @@ class Monitor:
                             requested_at = time.monotonic()
                             LOG.warning("Optional subscription rejected; trying variant %s",
                                         subscription_index)
-                            await ws.send_json(subscriptions[subscription_index])
+                            request_id = max(10, request_id + 1)
+                            await ws.send_json({**subscriptions[subscription_index], "id": request_id})
                             continue
                         raise RuntimeError("Moonraker subscription rejected")
                     result = packet.get("result", {})
                     snapshot = result.get("status") if isinstance(result, dict) else None
                     if not isinstance(snapshot, dict):
                         raise RuntimeError("Moonraker subscription returned no status")
+                    if not all(isinstance(snapshot.get(obj), dict) for obj in
+                               ("print_stats", "webhooks", "virtual_sdcard")):
+                        raise RuntimeError("Moonraker subscription missing core objects")
+                    pending = False
+                    last_refresh = time.monotonic()
                     self._process_snapshot(processor, snapshot)
                     continue
                 if reply_id == 2:
@@ -329,10 +435,10 @@ class Monitor:
                         cause = ("notify_klippy_shutdown" if self.shutdown_query_since is not None
                                  else self.disconnect_method)
                         if processor.has_snapshot:
-                            current, alerts = processor.apply_update(update, time.time(), source_method=cause,
+                            current, alerts = processor.apply_update(update, time.monotonic(), source_method=cause,
                                                                      trigger="state_query")
                         else:
-                            current, alerts = processor.set_snapshot(update, time.time(), source_method=cause,
+                            current, alerts = processor.set_snapshot(update, time.monotonic(), source_method=cause,
                                                                      trigger="state_query")
                         self._record(processor, current, alerts)
                         hooks_state = snapshot["webhooks"].get("state")
@@ -349,21 +455,33 @@ class Monitor:
                 self.native_events.observe(packet)
                 method = packet.get("method")
                 if method == "notify_klippy_shutdown":
-                    self.last_status_received_at = None
+                    self._invalidate_subscription()
+                    pending = False
                     self.shutdown_query_since = time.monotonic()
                     await ws.send_json(QUERY)
                 elif method == "notify_klippy_disconnected":
-                    self.last_status_received_at = None
+                    self._invalidate_subscription()
+                    pending = False
                     self._klippy_disconnected(method)
                     await ws.send_json(QUERY)
                 elif method == "notify_klippy_ready":
-                    self.last_status_received_at = None
-                    self._klippy_recovered(method)
+                    self._invalidate_subscription()
+                    self.shutdown_query_since = None
+                    rule_objects = await self._rule_objects(session, headers)
+                    subscriptions = self._subscriptions(rule_objects)
                     subscription_index = 0
                     requested_at = time.monotonic()
-                    await ws.send_json(subscriptions[subscription_index])
+                    request_id = max(10, request_id + 1)
+                    pending = True
+                    await ws.send_json({**subscriptions[subscription_index], "id": request_id})
                 else:
-                    current, alerts = processor.handle_packet(packet, time.time())
+                    if method == "notify_status_update" and not self.subscription_active:
+                        self._tick(processor)
+                        continue
+                    params = packet.get("params")
+                    if method == "notify_status_update" and isinstance(params, list) and params and isinstance(params[0], dict):
+                        self._remember_fields(params[0])
+                    current, alerts = processor.handle_packet(packet, time.monotonic())
                     if current is not None:
                         if method == "notify_status_update":
                             self.last_status_received_at = time.monotonic()
@@ -375,38 +493,32 @@ class Monitor:
                             self._klippy_disconnected(method)
                 self._tick(processor)
 
+    async def _listen_forever(self, session):
+        while True:
+            try:
+                await self._listen(session)
+            except asyncio.CancelledError:
+                raise
+            except (aiohttp.ClientError, OSError, TimeoutError,
+                    ConnectionError, RuntimeError) as exc:
+                self._invalidate_subscription("disconnected")
+                LOG.warning("Moonraker WebSocket problem: %s", type(exc).__name__)
+                if self.ws_offline_since is None:
+                    self.ws_offline_since = time.monotonic()
+                if (not self.ws_offline_notified and
+                        time.monotonic() - self.ws_offline_since >= self.settings.disconnect_seconds):
+                    self.ws_offline_id = self._new_incident("moonraker_incidents")
+                    self._system_alert("moonraker_unreachable", self.ws_offline_id,
+                                       "Moonraker WebSocket is unavailable")
+                    self.ws_offline_notified = True
+                self._heartbeat()
+            await asyncio.sleep(3)
+
     async def run(self):
         headers = {"User-Agent": "hermes-plugin-kalico-monitor/0.3"}
         async with aiohttp.ClientSession(headers=headers, trust_env=False) as session:
-            sender = asyncio.create_task(self._dispatch(session))
-            try:
-                while True:
-                    try:
-                        await self._listen(session)
-                    except asyncio.CancelledError:
-                        raise
-                    except (aiohttp.ClientError, OSError, TimeoutError,
-                            ConnectionError, RuntimeError) as exc:
-                        self.reporter.suspend()
-                        self.last_status_received_at = None
-                        LOG.warning("Moonraker WebSocket problem: %s", type(exc).__name__)
-                        if self.ws_offline_since is None:
-                            self.ws_offline_since = time.monotonic()
-                        if (not self.ws_offline_notified and
-                                time.monotonic() - self.ws_offline_since >= self.settings.disconnect_seconds):
-                            self.ws_offline_id = self._new_incident("moonraker_incidents")
-                            self._system_alert("moonraker_unreachable", self.ws_offline_id,
-                                               "Moonraker WebSocket is unavailable")
-                            self.ws_offline_notified = True
-                        await asyncio.sleep(3)
-                    else:
-                        await asyncio.sleep(3)
-            finally:
-                sender.cancel()
-                try:
-                    await sender
-                except asyncio.CancelledError:
-                    pass
+            await self._supervise(self._dispatch(session), self._listen_forever(session))
+
 
 
 def main():

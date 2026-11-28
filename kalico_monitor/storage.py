@@ -112,7 +112,8 @@ class Outbox:
         rows = self.conn.execute("""SELECT a.* FROM alerts a WHERE NOT EXISTS
             (SELECT 1 FROM alert_routes r WHERE r.alert_id=a.id)
             AND a.delivered IS NULL AND a.suppressed IS NULL
-            ORDER BY a.created LIMIT ?""", (limit,)).fetchall()
+            ORDER BY CASE a.severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,
+                     a.created LIMIT ?""", (limit,)).fetchall()
         return [dict(r) for r in rows]
 
     def _finalize_routes(self, alert_id: str) -> None:
@@ -178,12 +179,14 @@ class Outbox:
                 self._finalize_routes(alert_id)
         return suppressed
 
-    def pending_routes(self, now: float | None = None, limit: int = 20) -> list[dict]:
+    def pending_routes(self, now: float | None = None, limit: int = 20, route: str | None = None) -> list[dict]:
         now = time.time() if now is None else now
         rows = self.conn.execute("""SELECT a.*,r.route FROM alert_routes r
             JOIN alerts a ON a.id=r.alert_id WHERE r.delivered IS NULL
             AND r.suppressed IS NULL AND a.suppressed IS NULL
-            AND r.next_retry<=? ORDER BY a.created LIMIT ?""", (now, limit)).fetchall()
+            AND r.next_retry<=? AND (? IS NULL OR r.route=?)
+            ORDER BY CASE a.severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,
+                     a.created LIMIT ?""", (now, route, route, limit)).fetchall()
         return [dict(r) for r in rows]
 
     def route_delivered(self, alert_id: str, route: str) -> None:

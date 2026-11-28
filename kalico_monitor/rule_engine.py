@@ -44,6 +44,17 @@ class RuleEngine:
         self.rules = rules
         previous = store.get_meta(META_KEY, {})
         self.tracker = previous if isinstance(previous, dict) else {}
+        self.suspend()
+
+    def suspend(self):
+        changed = False
+        for state in self.tracker.values():
+            if isinstance(state, dict) and (state.get("since") is not None or state.get("last") is not None):
+                state["since"] = None
+                state["last"] = None
+                changed = True
+        if changed:
+            self.store.set_meta(META_KEY, self.tracker)
 
     @property
     def objects(self) -> tuple[str, ...]:
@@ -51,8 +62,8 @@ class RuleEngine:
 
     def evaluate(self, status: dict, now: float | None = None,
                  *, connected: bool = True, generation: int = 0,
-                 filename: str = "") -> int:
-        now = time.time() if now is None else now
+                 filename: str = "", field_seen: dict | None = None) -> int:
+        now = time.monotonic() if now is None else now
         changed = False
         count = 0
         for rule in self.rules:
@@ -66,16 +77,18 @@ class RuleEngine:
                 state = {"sequence":state.get("sequence", 0),
                          "signature":list(signature), "since":None,
                          "fired":False, "last":None}
-            value = numeric_field(status, rule.object, rule.field) if connected else None
+            fresh = field_seen is None or 0 <= now - field_seen.get(
+                (rule.object, rule.field.split(".")[0]), float("-inf")) <= 120
+            value = numeric_field(status, rule.object, rule.field) if connected and fresh else None
             active = value is not None and matched(value, rule.condition, rule.threshold)
             since = state.get("since")
             if not active:
                 state["since"] = None
-                state["fired"] = False
+                if value is not None:
+                    state["fired"] = False
             else:
                 if not isinstance(since, (int, float)) or since > now:
                     state["since"] = now
-                    state["fired"] = False
                 last = state.get("last")
                 cooldown_ok = (not isinstance(last, (int, float))
                                or now - last >= rule.cooldown)

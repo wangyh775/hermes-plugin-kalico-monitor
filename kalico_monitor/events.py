@@ -63,7 +63,7 @@ class EventProcessor:
         """A subscription reply is a full snapshot; reconcile with persisted state."""
         self.status = {key: dict(value) for key, value in status.items() if isinstance(value, dict)}
         self.has_snapshot = True
-        return self.evaluate(now, source_method=source_method, trigger=trigger)
+        return self.evaluate(now, source_method=source_method, trigger=trigger, allow_stall=False)
 
     def apply_update(self, update: dict, now: float, *, source_method=None, trigger="state_update") -> tuple[dict, list[Alert]]:
         """Changes are deltas, not complete objects. Merge fields in-place."""
@@ -72,12 +72,12 @@ class EventProcessor:
         for key, delta in update.items():
             if isinstance(delta, dict):
                 self.status.setdefault(key, {}).update(delta)
-        return self.evaluate(now, source_method=source_method, trigger=trigger)
+        return self.evaluate(now, source_method=source_method, trigger=trigger, allow_stall=False)
 
-    def evaluate(self, now: float, *, source_method=None, trigger="timer") -> tuple[dict, list[Alert]]:
+    def evaluate(self, now: float, *, source_method=None, trigger="timer", allow_stall=True) -> tuple[dict, list[Alert]]:
         sample = sample_from_status(self.status)
         old_generation = self.previous.get("generation", 0) if self.previous else 0
-        current, events = compare(self.previous, sample, now, self.stall_minutes)
+        current, events = compare(self.previous, sample, now, self.stall_minutes, allow_stall=allow_stall)
         # Error messages are job-specific: a new print must not inherit G-code
         # errors from the preceding task.
         if current["generation"] > old_generation:
@@ -100,6 +100,8 @@ class EventProcessor:
         """
         method = packet.get("method")
         params = packet.get("params", [])
+        if not isinstance(params, list):
+            return None, []
         if method == "notify_gcode_response" and params:
             self.ingest_gcode_response(params[0])
         if method == "notify_status_update" and params and isinstance(params[0], dict):

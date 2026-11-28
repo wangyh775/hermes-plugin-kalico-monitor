@@ -52,7 +52,7 @@ def initial_state(sample: dict, now: float) -> dict:
     }
 
 
-def compare(previous: dict | None, sample: dict, now: float, stall_minutes: int = 0) -> tuple[dict, list[dict]]:
+def compare(previous: dict | None, sample: dict, now: float, stall_minutes: int = 0, *, allow_stall: bool = True) -> tuple[dict, list[dict]]:
     """Return updated persistent state plus edge-triggered events.
 
     Preserves job generation across resume (paused -> printing); dedupes
@@ -131,10 +131,10 @@ def compare(previous: dict | None, sample: dict, now: float, stall_minutes: int 
         or sample["progress"] != previous.get("progress")
     )
     if new_print == "printing" and sample["file_position"] is not None and not stopped:
-        if moved or new_job:
+        if moved or new_job or changed_at > now:
             changed_at = now
             stall_open = False
-        elif stall_minutes > 0 and not stall_open and now - changed_at >= 60 * stall_minutes:
+        elif allow_stall and stall_minutes > 0 and not stall_open and now - changed_at >= 60 * stall_minutes:
             stall_open = True
             once("stalled", f"File position has not advanced for {stall_minutes} minutes")
     else:

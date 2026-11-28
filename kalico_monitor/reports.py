@@ -130,7 +130,9 @@ class PeriodicReporter:
                 "generation": generation,
                 "filename": filename,
                 "interval_seconds": self.interval_seconds,
-                "sequence": 0,
+                "sequence": (tracker.get("sequence", 0) if tracker and
+                             tracker.get("generation") == generation and
+                             tracker.get("filename") == filename else 0),
                 "next_due_at": now + self.interval_seconds if active else None,
             }
             self.store.report_checkpoint(META_KEY, tracker)
