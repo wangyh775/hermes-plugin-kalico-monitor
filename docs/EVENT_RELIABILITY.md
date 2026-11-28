@@ -1,63 +1,54 @@
-# Event system reliability
+# Event reliability and architecture
 
-Monitor remains a read-only event producer/router. No new Handler, Skill or
-control functionality. The two delivery workers are independently scheduled;
-unexpected exit of either worker or the listener propagates to the service
-supervisor. Each worker records a heartbeat, not proof of remote delivery.
-Critical alerts precede warnings and informational events; each worker has
-one in-flight request. Pending progress reports older than 30 minutes expire.
+Monitor is a standalone, read-only event producer/router. It never executes printer actions and has no Kiln dependency. The optional klipper-filament-force extension is a separate Klipper project; Monitor reads its event journal through Moonraker WebSocket/HTTP only. Its original payload, window samples and IDs remain unchanged.
 
-Subscription acknowledgements are matched to request IDs. Klippy ready
-invalidates the old subscription; a full acknowledgement must arrive within
-20 seconds per attempt. A 30-second subscription refresh confirms unchanged
-fields and rediscovers optional objects while degraded. An explicit RPC
-subscription rejection is a capability failure, not a transport failure. Rules require valid subscription and field observations within
-120 seconds. The continuous threshold timer uses local monotonic time and
-resets across outage/restart; a fired threshold remains latched until a
-valid normal value. Missing optional objects/invalid configured fields appear
-in subscription health and generate monitor_degraded / monitor_recovered.
-Recovery does not imply that lost events were replayed.
-
-Native notifications are opt-in. Different consecutive payloads are not
-suppressed; identical consecutive payloads within 2 seconds are deduplicated
-(button edges and G-code responses exempt). Informational G-code messages
-are limited to one notification attempt per route per 10 seconds; their
-records remain in SQLite, and warnings bypass that limit. This is best-effort,
-not exactly-once delivery.
-Oversize payloads above the conservative 16 KiB cap are counted and dropped.
-Service state, CPU throttle bits, G-code responses and job/queue fields are
-exposed when present; original positional params remain in event.params.
-See [Moonraker JSON-RPC notifications](https://moonraker.readthedocs.io/en/latest/external_api/jsonrpc_notifications/).
-
-## Configuration and schema
-
-Unknown events and non-forwardable events configured on are errors.
-Deprecated nozzle_force_anomaly: off warns; remove it. Message references
-must be registered events or custom rules. Six source categories remain;
-external ingestion is reserved. Registry definitions expose severity,
-default routing, schema version, payload family and deduplication policy.
-Dynamic severity can differ for native state transitions.
-
-The v1 envelope is documented in event-envelope-v1.schema.json. Legacy
-occurred_at remains local queue time; queued_at is UTC, received_at is
-Monitor observation time (null for legacy rows), source_occurred_at is null
-unless known (current adapters do not infer source wall-clock time).
-Route delivery timestamps remain in SQLite. Agent acceptance is not
-inference completion. Existing outbox IDs and original filament payload
-remain compatible. Disconnect/recovery incident identity is persisted with
-the alert. Periodic report sequences survive interval changes.
-
-## Verification
-
-```bash
-python -m pytest -q
-ruff check .
-kalico-monitor config --check
-kalico-monitor events --info monitor_degraded
-kalico-monitor events --info notify_service_state_changed
+```mermaid
+flowchart TD
+    K[Kalico / Klipper extensions] --> M[Moonraker API]
+    M --> E[Monitor event generation and registry]
+    C[monitor.cfg] --> E
+    E --> O[SQLite outbox]
+    O --> R[Single route assignment]
+    R --> D[Direct worker]
+    R --> A[Agent worker]
+    D --> H[Hermes gateway]
+    A --> H
 ```
 
-On-device validation must cover actual Moonraker subscription refresh, optional
-objects, Hermes/Feishu delivery, DB growth, and systemd restart. /kalico health
-reports worker heartbeats and subscription health. Monitoring is not a
-substitute for the printer's local safety protection.
+## Operational behavior
+
+* A single connection-state transition path handles loss and recovery; WebSocket heartbeat, RPC probes when silent, and subscription refresh retain distinct purposes. Expired connection epochs and subscription request IDs reject stale responses. Transport, RPC and subscription health remain distinguishable. Optional objects are rediscovered when degraded.
+* Shutdown notifications are persisted before diagnosis. Ready state, recovery alert and incident closure share a transaction. Known incident keys preserve per-route ordering; legacy rows are migrated only where identity can be established. Critical events with malformed optional data retain their stable ID and minimal payload; invalid data and terminal failures enter dead_letters.
+* One route assignment loop allocates independent Direct/Agent tasks. Each worker has one in-flight request, retries temporary failures, and prioritizes critical alerts. HTTP 400/413/422 and local serialization failures are terminal by current policy. Acknowledgement is not guaranteed final chat delivery or inference completion. Pending progress reports older than 30 minutes expire.
+* Rules require valid, fresh observations; a fired condition rearms only on a valid normal reading. Job identity uses history when available and conservative fallback. Filament journal checkpoints are atomic; known sequence gaps are reported, repeated records skipped, and late missing records remain eligible.
+* SQLite uses WAL and short transactions. Storage health is updated during maintenance; terminal informational G-code payloads older than seven days are compacted hourly (up to 1,000 per pass). IDs and pending/critical records are retained. No hard DB size cap or asynchronous writer.
+* Native events are opt-in. Identical consecutive payloads within 2 seconds are deduplicated except button/G-code events; informational G-code notifications are limited to 10 seconds per route. The 16 KiB cap counts and drops oversized native payloads.
+
+## Configuration and diagnostics
+
+Existing monitor.env and monitor.cfg syntax is unchanged. Configuration extensions are parsed together. Direct templates are owned by the message configuration, not Agent routing. Handler/Skill behavior is frozen. The legacy watch_nozzle_force setting still enables filament_force events; obsolete Python subscription flags filament_only/legacy_only are removed. The deprecated nozzle_force_anomaly: off setting is accepted with a warning for upgrade compatibility.
+
+```ini
+[reliability]
+subscription_refresh: 30
+subscription_timeout: 20
+observation_gap: 35
+field_max_age: 120
+connect_timeout: 5
+```
+
+See [event schema](event-envelope-v1.schema.json) and the configuration reference. Existing event IDs and schema fields remain compatible; unknown source wall time is nullable.
+
+```bash
+kalico-monitor config --check
+kalico-monitor events
+kalico-monitor dead-letters list
+kalico-monitor incidents list
+kalico-monitor storage status
+python -m pytest -q
+ruff check .
+```
+
+The tests exercise failure and rollback paths, not physical hardware. Verify actual Moonraker/Hermes/Feishu traffic and sustained storage behavior on the device. Monitor is not a printer safety system.
+
+Historical implementation notes: [phase 1](archive/EVENT_RELIABILITY.md), [phase 2](archive/EVENT_RELIABILITY_PHASE2.md), [phase 3](archive/EVENT_RELIABILITY_PHASE3.md). Archived descriptions are historical, not current defaults.
