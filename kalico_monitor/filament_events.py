@@ -50,8 +50,8 @@ def valid_event(event: Any) -> bool:
                or any(finite(x) is None for x in row) for row in samples):
             return False
     try:
-        return len(json.dumps(event, allow_nan=False)) <= 256_000
-    except (ValueError, TypeError, OverflowError, RecursionError):
+        return len(json.dumps(event, allow_nan=False, ensure_ascii=False).encode('utf-8')) <= 256_000
+    except (ValueError, TypeError, OverflowError, RecursionError, UnicodeError):
         return False
 
 

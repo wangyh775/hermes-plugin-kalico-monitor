@@ -26,6 +26,7 @@ class EventDefinition:
     schema_version: int = 1
     dedup_policy: str = "source_or_sequence"
     payload_schema: str = "object_or_null"
+    notification_interval: int = 0
 
 
 SEVERITIES = {
@@ -34,7 +35,7 @@ SEVERITIES = {
     "stalled": "warning", "filament_jam_detected": "warning",
     "filament_runout_detected": "warning", "filament_jam_confirmed": "critical",
     "filament_recovery_failed": "warning", "monitor_degraded": "warning",
-    "notify_cpu_throttled": "warning",
+    "notify_cpu_throttled": "warning", "event_gap_detected": "warning",
 }
 
 
@@ -56,12 +57,13 @@ BUILTINS = {
     }, "moonraker_lifecycle", "moonraker", "print_stats"),
     **_group({
         "klippy_shutdown": "Klippy 停机", "klippy_disconnected": "Klippy 断开",
-        "klippy_recovered": "Klippy 恢复",
+        "klippy_recovered": "Klippy 恢复", "klippy_shutdown_recovered": "Klippy 停机恢复",
     }, "moonraker_native", "moonraker", "webhooks"),
     **_group({
         "stalled": "打印停滞", "print_progress": "定时进度",
         "moonraker_unreachable": "Moonraker 断开", "moonraker_recovered": "Moonraker 恢复",
         "monitor_degraded": "监控能力退化", "monitor_recovered": "监控能力恢复",
+        "event_gap_detected": "事件序列缺口",
     }, "monitor_internal", "monitor"),
     **_group({
         "filament_jam_detected": "疑似堵头", "filament_runout_detected": "断料或送料异常",
@@ -109,7 +111,9 @@ NATIVE = {
         method, "moonraker_native", "moonraker", title,
         native_method=method, explicit_only=True, forwardable=method in _FORWARD,
         severity=SEVERITIES.get(method, "info"), default_mode="off",
-        dedup_policy="identical_consecutive_payload_short_window", payload_schema="rpc_params_v1",
+        dedup_policy=("none" if method in {"notify_button_event", "notify_gcode_response"}
+                      else "identical_consecutive_payload_short_window"), payload_schema="rpc_params_v1",
+        notification_interval=10 if method == "notify_gcode_response" else 0,
     )
     for method, title in {**_FORWARD, **_CATALOG_ONLY}.items()
 }
@@ -164,3 +168,16 @@ def row_metadata(row: dict) -> dict:
         except ValueError:
             payload = None
     return metadata(row["kind"], payload)
+
+
+def validate_payload(kind, payload, severity):
+    """Validate payload families; allow old producers with missing payload."""
+    if severity not in {"info", "warning", "critical"}:
+        raise ValueError("invalid severity")
+    if payload is None:
+        return
+    if not isinstance(payload, dict):
+        raise ValueError("payload must be an object")
+    entry = REGISTRY.get(kind)
+    if entry and entry.payload_schema == "rpc_params_v1" and not isinstance(payload.get("params"), list):
+        raise ValueError("native params must be a list")
