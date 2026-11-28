@@ -85,6 +85,8 @@ def read_env(path: Path) -> dict[str, str]:
     """Read env as data, never execute it."""
     values = defaults()
     if not path.is_file():
+        from .monitor_cfg import cfg_path, read_cfg
+        values.update(read_cfg(cfg_path(path)))
         return values
     for line in path.read_text(encoding="utf-8").splitlines():
         match = re.match(r"^\s*([A-Z][A-Z0-9_]*)\s*=(.*)$", line)
@@ -93,6 +95,8 @@ def read_env(path: Path) -> dict[str, str]:
             if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
                 value = value[1:-1]
             values[match.group(1)] = value
+    from .monitor_cfg import cfg_path, read_cfg
+    values.update(read_cfg(cfg_path(path)))
     return values
 
 
@@ -241,6 +245,9 @@ def test_moonraker(values: dict[str, str], out=print, timeout: int = 4) -> bool:
 
 
 def prompt_value(key: str, current: str, ask, secret_ask, out) -> tuple[str, bool]:
+    if key == "KALICO_EVENT_MODES":
+        from .monitor_cfg import edit_events
+        return edit_events(current, ask, out), False
     if key in SECRET_KEYS:
         out(f"{LABELS[key]}: {masked(key, current)}")
         while True:
@@ -313,7 +320,9 @@ def wizard(path: Path, ask=input, secret_ask=getpass.getpass, out=print) -> bool
             if any(mode == "agent" or mode == "both" for kind, mode in parse_modes(values["KALICO_EVENT_MODES"]).items()) and not values["HERMES_AGENT_WEBHOOK_URL"]:
                 out("启用 agent/both 时必须配置 Hermes Agent Webhook 地址。")
                 continue
+            from .monitor_cfg import cfg_path, save_cfg
             save_env(path, values)
+            save_cfg(cfg_path(path), values)
             out(f"已保存：{path}（权限 0600）")
             if generated_secret and values["HERMES_WEBHOOK_SECRET"] == generated_secret:
                 out("请将以下新 Secret 同步到 Hermes Webhook 路由（仅显示本次）：")
