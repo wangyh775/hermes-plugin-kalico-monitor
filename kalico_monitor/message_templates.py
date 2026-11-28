@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 from .custom_config import DEFAULT_MESSAGE_FIELDS
+from .event_registry import row_metadata
 
 LABELS = {
     "printer": "设备", "kind": "事件", "severity": "等级", "occurred_at": "时间",
@@ -18,7 +19,8 @@ LABELS = {
     "reason": "原因", "step_mm": "单次 Z 补偿 (mm)",
     "total_mm": "累计 Z 补偿 (mm)", "window_summary": "受力窗口",
     "object": "状态对象", "field": "监测字段", "value": "当前值",
-    "threshold": "阈值",
+    "threshold": "阈值", "source_type": "来源类型", "source": "来源",
+    "source_method": "原生通知方法", "source_object": "来源对象", "trigger": "触发路径",
 }
 
 
@@ -55,7 +57,7 @@ def render_direct_message(alert: dict, printer: str,
             f"{window.get('duration_s', '—')} s / "
             f"{window.get('sample_count', '—')} 原始点"
         )}
-    values = {**event, **basic}
+    values = {**event, **basic, **row_metadata(alert)}
     # Hermes DIRECT_PROMPT owns the static heading; avoid two titles.
     lines = []
     for field in fields:

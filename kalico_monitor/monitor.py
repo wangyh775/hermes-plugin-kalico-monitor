@@ -16,6 +16,7 @@ from .config import Settings
 from .events import Alert, EventProcessor
 from .filament_events import OBJECT as FILAMENT_OBJECT
 from .filament_events import FilamentEventTracker
+from .native_events import NativeEventAdapter
 from .notifier import deliver
 from .policy import parse_modes, routes_for
 from .reports import PeriodicReporter
@@ -54,6 +55,7 @@ class Monitor:
         for rule in settings.event_rules:
             self.event_modes.setdefault(rule.name, rule.mode)
         self.store = store
+        self.native_events = NativeEventAdapter(store, self.event_modes)
         cancelled = store.reconcile_policy(self.event_modes)
         if cancelled:
             LOG.warning("suppressed %s pending routes by updated event policy", cancelled)
@@ -71,6 +73,7 @@ class Monitor:
         self.ws_offline_notified = False
         self.ws_offline_id = 0
         self.shutdown_query_since: float | None = None
+        self.disconnect_method: str | None = None
 
     def _save(self, current: dict, alerts: list[Alert]):
         previous = self.last_stored_state
@@ -106,9 +109,10 @@ class Monitor:
         return value
 
     def _system_alert(self, kind: str, generation: int, detail: str,
-                      severity: str = "critical"):
+                      severity: str = "critical", source_method: str | None = None,
+                      trigger: str | None = None):
         event = Alert(kind=kind, generation=generation, filename="", detail=detail,
-                      severity=severity)
+                      severity=severity, source_method=source_method, trigger=trigger)
         self.store.enqueue(event)
         LOG.warning("queued %s %s", kind, detail)
 
@@ -162,15 +166,18 @@ class Monitor:
             self.klippy_down_since = None
             self.shutdown_query_since = None
 
-    def _klippy_disconnected(self):
+    def _klippy_disconnected(self, source_method=None):
         if self.klippy_down_since is None:
             self.klippy_down_since = time.monotonic()
+            self.disconnect_method = source_method
 
-    def _klippy_recovered(self):
+    def _klippy_recovered(self, source_method=None):
         self.klippy_down_since = None
+        self.disconnect_method = None
         if self.klippy_down_alerted:
             self._system_alert("klippy_recovered", self.klippy_down_id,
-                               "Moonraker reports Kalico ready again; check before restarting print", "info")
+                               "Moonraker reports Kalico ready again; check before restarting print", "info",
+                               source_method=source_method, trigger="state_recovery")
             self.klippy_down_alerted = False
 
     def _tick(self, processor: EventProcessor):
@@ -183,9 +190,11 @@ class Monitor:
             delta = {"webhooks": {"state": "shutdown", "state_message":
                         "Kalico Shutdown event received; state query did not return details"}}
             if processor.has_snapshot:
-                current, alerts = processor.apply_update(delta, time.time())
+                current, alerts = processor.apply_update(delta, time.time(), source_method="notify_klippy_shutdown",
+                                                         trigger="shutdown_query_timeout")
             else:
-                current, alerts = processor.set_snapshot(delta, time.time())
+                current, alerts = processor.set_snapshot(delta, time.time(), source_method="notify_klippy_shutdown",
+                                                         trigger="shutdown_query_timeout")
             self._record(processor, current, alerts)
         if processor.has_snapshot:
             current, alerts = processor.evaluate(time.time())
@@ -209,7 +218,8 @@ class Monitor:
                 and time.monotonic() - self.klippy_down_since >= self.settings.disconnect_seconds):
             self.klippy_down_id = self._new_incident("klippy_incidents")
             self._system_alert("klippy_disconnected", self.klippy_down_id,
-                               "Moonraker has lost its connection to Kalico")
+                               "Moonraker has lost its connection to Kalico",
+                               source_method=self.disconnect_method, trigger="disconnect_confirmed")
             self.klippy_down_alerted = True
 
     async def _rule_objects(self, session: aiohttp.ClientSession, headers: dict) -> tuple[str, ...]:
@@ -305,10 +315,14 @@ class Monitor:
                     snapshot = result.get("status") if isinstance(result, dict) else None
                     if isinstance(snapshot, dict) and isinstance(snapshot.get("webhooks"), dict):
                         update = {"webhooks": snapshot["webhooks"]}
+                        cause = ("notify_klippy_shutdown" if self.shutdown_query_since is not None
+                                 else self.disconnect_method)
                         if processor.has_snapshot:
-                            current, alerts = processor.apply_update(update, time.time())
+                            current, alerts = processor.apply_update(update, time.time(), source_method=cause,
+                                                                     trigger="state_query")
                         else:
-                            current, alerts = processor.set_snapshot(update, time.time())
+                            current, alerts = processor.set_snapshot(update, time.time(), source_method=cause,
+                                                                     trigger="state_query")
                         self._record(processor, current, alerts)
                         hooks_state = snapshot["webhooks"].get("state")
                         if hooks_state in {"shutdown", "error"}:
@@ -321,6 +335,7 @@ class Monitor:
                             self._klippy_disconnected()
                     continue
 
+                self.native_events.observe(packet)
                 method = packet.get("method")
                 if method == "notify_klippy_shutdown":
                     self.last_status_received_at = None
@@ -328,11 +343,11 @@ class Monitor:
                     await ws.send_json(QUERY)
                 elif method == "notify_klippy_disconnected":
                     self.last_status_received_at = None
-                    self._klippy_disconnected()
+                    self._klippy_disconnected(method)
                     await ws.send_json(QUERY)
                 elif method == "notify_klippy_ready":
                     self.last_status_received_at = None
-                    self._klippy_recovered()
+                    self._klippy_recovered(method)
                     subscription_index = 0
                     requested_at = time.monotonic()
                     await ws.send_json(subscriptions[subscription_index])
@@ -344,9 +359,9 @@ class Monitor:
                         self._record(processor, current, alerts)
                         hooks = processor.status.get("webhooks", {})
                         if hooks.get("state") == "ready":
-                            self._klippy_recovered()
+                            self._klippy_recovered(method)
                         elif hooks.get("state") in {"disconnected", "startup"}:
-                            self._klippy_disconnected()
+                            self._klippy_disconnected(method)
                 self._tick(processor)
 
     async def run(self):

@@ -11,7 +11,8 @@ import re
 import tempfile
 from pathlib import Path
 
-from .policy import EVENT_MODES, parse_modes
+from .event_registry import BUILTINS, NATIVE
+from .policy import EVENT_MODES, mode_for, parse_modes
 
 MONITOR_OPTIONS = {
     "progress_report_minutes": "KALICO_PROGRESS_REPORT_MINUTES",
@@ -23,14 +24,8 @@ PRINTER_OPTIONS = {"name": "KALICO_PRINTER_NAME", "moonraker_url": "MOONRAKER_UR
 STATUS_OPTIONS = {"fields": "KALICO_STATUS_FIELDS", "chamber_object": "KALICO_CHAMBER_OBJECT"}
 HERMES_OPTIONS = {"direct_chat_id": "KALICO_DIRECT_CHAT_ID", "agent_chat_id": "KALICO_AGENT_CHAT_ID"}
 CFG_KEYS = frozenset((*MONITOR_OPTIONS.values(), "KALICO_EVENT_MODES"))
-LIFECYCLE_EVENTS = (
-    "started", "paused", "resumed", "complete", "cancelled", "error",
-    "stalled", "print_progress", "klippy_shutdown", "klippy_disconnected",
-    "klippy_recovered", "moonraker_unreachable", "moonraker_recovered",
-    "filament_jam_detected", "filament_runout_detected",
-    "filament_diagnosis_result", "filament_jam_confirmed", "filament_z_adjusted",
-    "filament_recovery_started", "filament_recovery_verified", "filament_recovery_failed",
-)
+# Compatibility alias for older imports; registry is the canonical definition.
+LIFECYCLE_EVENTS = tuple(BUILTINS)
 _VALID_KIND = re.compile(r"^[A-Za-z0-9_]+$")
 
 
@@ -154,7 +149,7 @@ def edit_events(current: str, ask=input, out=print) -> str:
     """Interactive per-event mode editor; no file modifications until confirmed."""
     policies = parse_modes(current)
     original = current
-    events = list(LIFECYCLE_EVENTS)
+    events = list(LIFECYCLE_EVENTS) + [name for name, item in NATIVE.items() if item.forwardable]
     for name in policies:
         if name not in events and name != "default":
             events.append(name)
@@ -162,7 +157,7 @@ def edit_events(current: str, ask=input, out=print) -> str:
         out("\n事件路由 (off=关闭 / direct=直推飞书 / agent=模型分析 / both=两路)")
         out(f"[d] 默认策略: {policies['default']}")
         for i, name in enumerate(events, 1):
-            out(f"[{i}] {name}: {policies.get(name, policies['default'])}")
+            out(f"[{i}] {name}: {mode_for(name, policies)}")
         out("[a] 添加自定义事件  [s] 保存  [0] 取消")
         choice = ask("请选择事件：").strip().lower()
         if choice == "0":

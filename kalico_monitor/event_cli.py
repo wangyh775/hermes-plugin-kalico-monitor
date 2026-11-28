@@ -6,33 +6,29 @@ import json
 import urllib.request
 
 from .custom_config import load_extensions
-from .filament_events import EVENTS as FILAMENT_EVENTS
-from .monitor_cfg import LIFECYCLE_EVENTS, cfg_path
-from .policy import parse_modes
+from .event_registry import NATIVE, REGISTRY, SOURCE_TYPES, definition
+from .monitor_cfg import cfg_path
+from .policy import mode_for, parse_modes
 from .setup import default_path, read_env
-
-DESCRIPTIONS = {
-    "started": "开始打印", "paused": "暂停打印", "resumed": "恢复打印",
-    "complete": "打印完成", "cancelled": "取消打印", "error": "打印异常",
-    "stalled": "打印停滞", "print_progress": "定时进度",
-    "klippy_shutdown": "Klippy 停机", "klippy_disconnected": "Klippy 断开",
-    "klippy_recovered": "Klippy 恢复", "moonraker_unreachable": "Moonraker 断开",
-    "moonraker_recovered": "Moonraker 恢复",
-    **{"filament_" + name: value[0] for name, value in FILAMENT_EVENTS.items()},
-}
 
 
 def main(argv: list[str]) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=("events", "discover", "test"))
     parser.add_argument("kind", nargs="?")
+    parser.add_argument("--source", choices=SOURCE_TYPES)
+    parser.add_argument("--native", action="store_true")
+    parser.add_argument("--info")
     parser.add_argument("--watch", action="store_true", help="observe Moonraker notifications")
     parser.add_argument("--file", type=type(default_path()), default=default_path())
     args = parser.parse_args(argv)
     values = read_env(args.file.expanduser())
     message_fields, custom_rules = load_extensions(cfg_path(args.file.expanduser()))
+    if (args.source or args.native or args.info) and (args.command != "events" or args.watch):
+        parser.error("event filters require events without --watch")
     if args.command == "test":
-        if args.kind not in LIFECYCLE_EVENTS and args.kind not in {r.name for r in custom_rules}:
+        entry = definition(args.kind, custom_rules)
+        if not entry or not entry.forwardable:
             parser.error("test requires a registered event name")
         import asyncio
         import time
@@ -94,13 +90,28 @@ def main(argv: list[str]) -> None:
         modes = parse_modes(values["KALICO_EVENT_MODES"])
         for rule in custom_rules:
             modes.setdefault(rule.name, rule.mode)
-        for name in LIFECYCLE_EVENTS:
-            mode = modes.get(name, modes["default"])
-            print(f"{name:25} {mode:7} {DESCRIPTIONS[name]}")
-        for rule in custom_rules:
-            print(f"{rule.name:25} {modes[rule.name]:7} 自定义 Moonraker 阈值事件")
-        for name in modes.keys() - set(LIFECYCLE_EVENTS) - {r.name for r in custom_rules} - {"default"}:
-            print(f"{name:25} {modes[name]:7} 未注册，仅配置路由")
+        entries = {**REGISTRY, **{r.name: definition(r.name, custom_rules) for r in custom_rules}}
+        if args.info:
+            entry = entries.get(args.info)
+            if not entry:
+                parser.error("unknown event")
+            print(json.dumps({**vars(entry), "mode": mode_for(entry.kind, modes)},
+                             ensure_ascii=False, indent=2))
+            return
+        for source in SOURCE_TYPES:
+            if args.source and source != args.source:
+                continue
+            selected = [entry for entry in entries.values() if entry.source_type == source
+                        and (not args.native or entry.kind in NATIVE)]
+            if not selected:
+                continue
+            print(f"[{source}]")
+            for entry in selected:
+                mode = mode_for(entry.kind, modes) if entry.forwardable else "catalog"
+                print(f"{entry.kind:34} {mode:7} {entry.description}")
+        if not args.native and not args.source:
+            for name in sorted(modes.keys() - entries.keys() - {"default"}):
+                print(f"{name:34} {modes[name]:7} 未注册，仅配置路由")
         return
     url = values["MOONRAKER_URL"].rstrip("/") + "/printer/objects/list"
     key = values["MOONRAKER_API_KEY"]

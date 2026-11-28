@@ -10,6 +10,7 @@ from typing import Any
 import aiohttp
 
 from .custom_config import DEFAULT_MESSAGE_FIELDS
+from .event_registry import row_metadata
 from .message_templates import render_direct_message
 
 
@@ -26,6 +27,7 @@ def make_request(alert: dict, secret: str, printer: str, timestamp: int | None =
         "occurred_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(alert["created"])),
         "alert_id": alert["id"],
     }
+    payload.update(row_metadata(alert))
     if alert.get("payload"):
         payload["event"] = json.loads(alert["payload"])
     if route == "direct":
