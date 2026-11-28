@@ -45,7 +45,7 @@ class NativeEventAdapter:
         now = time.monotonic() if now is None else now
         fingerprint = hashlib.sha256(serialized.encode()).hexdigest()
         previous = self.last.get(method)
-        if method not in {"notify_button_event"} and previous and previous[0] == fingerprint and now - previous[1] < COOLDOWN_SECONDS:
+        if method not in {"notify_button_event", "notify_gcode_response"} and previous and previous[0] == fingerprint and now - previous[1] < COOLDOWN_SECONDS:
             return False
         summary = json.dumps(params, ensure_ascii=False, allow_nan=False)[:1000]
         fields, severity = normalized_fields(method, params, entry.severity)

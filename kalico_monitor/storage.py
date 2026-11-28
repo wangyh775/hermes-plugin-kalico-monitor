@@ -193,6 +193,18 @@ class Outbox:
                      a.created LIMIT ?""", (now, route, route, limit)).fetchall()
         return [dict(r) for r in rows]
 
+    def allow_notification(self, alert_id: str, route: str, kind: str, seconds: float) -> bool:
+        """Reserve a rate-limit slot durably; retries of the same item keep their slot."""
+        key = f"notify_limit:{route}:{kind}"
+        previous = self.get_meta(key, {})
+        now = time.time()
+        if previous.get("id") == alert_id:
+            return True
+        if 0 <= now - previous.get("at", 0) < seconds:
+            return False
+        self.set_meta(key, {"id": alert_id, "at": now})
+        return True
+
     def route_suppressed(self, alert_id: str, route: str, reason: str) -> None:
         with self.conn:
             self.conn.execute("""UPDATE alert_routes SET suppressed=?,last_error=?

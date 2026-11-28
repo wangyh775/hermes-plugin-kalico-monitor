@@ -88,6 +88,7 @@ class Monitor:
                     self.ws_offline_notified = True
                     self.ws_offline_id = incident["id"]
         self._invalidate_subscription("starting")
+        self.store.set_meta("transport_connected", False)
 
     def _invalidate_subscription(self, state="subscribing"):
         self.subscription_active = False
@@ -109,6 +110,7 @@ class Monitor:
         required = set(self.rule_engine.objects)
         if self.settings.watch_nozzle_force:
             required.add(FILAMENT_OBJECT)
+        required.update(("print_stats", "webhooks", "virtual_sdcard"))
         missing = {name for name in required if not isinstance(snapshot.get(name), dict)}
         if self.settings.watch_nozzle_force and FILAMENT_OBJECT not in missing:
             if not isinstance(snapshot[FILAMENT_OBJECT].get("events"), list):
@@ -218,6 +220,10 @@ class Monitor:
                 if item["kind"] == "print_progress" and time.time() - item["created"] > 1800:
                     self.store.route_suppressed(item["id"], route, "stale progress report")
                     continue
+                if item["kind"] == "notify_gcode_response" and item["severity"] == "info":
+                    if not self.store.allow_notification(item["id"], route, item["kind"], 10):
+                        self.store.route_suppressed(item["id"], route, "informational G-code rate limit")
+                        continue
                 url = self.settings.hermes_agent_url if route == "agent" else self.settings.hermes_url
                 if route == "agent":
                     handler = self.settings.handler_config.for_event(item["kind"])
@@ -389,6 +395,8 @@ class Monitor:
         async with session.ws_connect(self.settings.ws_url, headers=headers,
                                       heartbeat=20) as ws:
             LOG.info("Moonraker connected; subscribing to status")
+            self.store.set_meta("transport_connected", True)
+            self._heartbeat()
             subscription_index = 0
             request_id = 1
             pending = True
@@ -398,6 +406,11 @@ class Monitor:
             subscription_cause = None
             while True:
                 if not pending and self.shutdown_query_since is None and time.monotonic() - last_refresh >= 30:
+                    # Rediscover optional objects after fallback, not just on reconnect.
+                    if not self.subscription_active or self.store.get_meta("capability_state", {}).get("missing"):
+                        rule_objects = await self._rule_objects(session, headers)
+                        subscriptions = self._subscriptions(rule_objects)
+                        subscription_index = 0
                     request_id = max(10, request_id + 1)
                     pending = True
                     requested_at = last_refresh = time.monotonic()
@@ -435,7 +448,13 @@ class Monitor:
                             request_id = max(10, request_id + 1)
                             await ws.send_json({**subscriptions[subscription_index], "id": request_id})
                             continue
-                        raise RuntimeError("Moonraker subscription rejected")
+                        # A JSON-RPC rejection proves transport is alive, even when
+                        # Klippy cannot serve a subscription. Keep the socket and retry.
+                        self._capabilities({})
+                        pending = False
+                        last_refresh = time.monotonic()
+                        self._heartbeat()
+                        continue
                     result = packet.get("result", {})
                     snapshot = result.get("status") if isinstance(result, dict) else None
                     if not isinstance(snapshot, dict):
@@ -531,6 +550,7 @@ class Monitor:
             except (aiohttp.ClientError, OSError, TimeoutError,
                     ConnectionError, RuntimeError) as exc:
                 self._invalidate_subscription("disconnected")
+                self.store.set_meta("transport_connected", False)
                 LOG.warning("Moonraker WebSocket problem: %s", type(exc).__name__)
                 if self.ws_offline_since is None:
                     self.ws_offline_since = time.monotonic()

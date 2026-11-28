@@ -10,7 +10,8 @@ one in-flight request. Pending progress reports older than 30 minutes expire.
 Subscription acknowledgements are matched to request IDs. Klippy ready
 invalidates the old subscription; a full acknowledgement must arrive within
 20 seconds per attempt. A 30-second subscription refresh confirms unchanged
-fields. Rules require valid subscription and field observations within
+fields and rediscovers optional objects while degraded. An explicit RPC
+subscription rejection is a capability failure, not a transport failure. Rules require valid subscription and field observations within
 120 seconds. The continuous threshold timer uses local monotonic time and
 resets across outage/restart; a fired threshold remains latched until a
 valid normal value. Missing optional objects/invalid configured fields appear
@@ -19,7 +20,10 @@ Recovery does not imply that lost events were replayed.
 
 Native notifications are opt-in. Different consecutive payloads are not
 suppressed; identical consecutive payloads within 2 seconds are deduplicated
-(button edges exempt). This is best-effort, not exactly-once delivery.
+(button edges and G-code responses exempt). Informational G-code messages
+are limited to one notification attempt per route per 10 seconds; their
+records remain in SQLite, and warnings bypass that limit. This is best-effort,
+not exactly-once delivery.
 Oversize payloads above the conservative 16 KiB cap are counted and dropped.
 Service state, CPU throttle bits, G-code responses and job/queue fields are
 exposed when present; original positional params remain in event.params.

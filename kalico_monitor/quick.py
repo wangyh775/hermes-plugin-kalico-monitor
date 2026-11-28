@@ -164,7 +164,8 @@ def read_monitor(path: Path, limit: int = 5) -> dict:
         heartbeat = None if row is None else json.loads(row["value"])
         health = {r["key"]: json.loads(r["value"]) for r in conn.execute(
             "SELECT key,value FROM metadata WHERE key IN "
-            "('subscription_health','dispatcher_heartbeat_direct','dispatcher_heartbeat_agent')")}
+            "('subscription_health','transport_connected','native_oversize_count',"
+            "'dispatcher_heartbeat_direct','dispatcher_heartbeat_agent')")}
         # A running old daemon may not have migrated the schema yet.
         has_suppressed = any(row[1] == "suppressed" for row in
                              conn.execute("PRAGMA table_info(alerts)"))
@@ -209,7 +210,11 @@ def format_health(data: dict, printer: str = "Kalico", now: float | None = None)
         state = "心跳过期（监听服务可能中断）"
     health = data.get("health", {})
     subscription = health.get("subscription_health", {})
-    lines = [f"订阅：{subscription.get('state', 'unknown')}"]
+    transport = health.get("transport_connected")
+    transport_text = "已连接" if transport is True else "断开" if transport is False else "未知"
+    lines = [f"Moonraker 连接：{transport_text}", f"订阅：{subscription.get('state', 'unknown')}"]
+    if health.get("native_oversize_count"):
+        lines.append(f"原生超限载荷：{health['native_oversize_count']} 条")
     if subscription.get("missing"):
         lines.append("不可用：" + ", ".join(subscription["missing"]))
     for route in ("direct", "agent"):

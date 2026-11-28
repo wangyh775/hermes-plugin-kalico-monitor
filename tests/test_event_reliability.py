@@ -264,3 +264,64 @@ def test_lifecycle_payload_and_timestamps(tmp_path):
         assert event["source_occurred_at"] is None
     finally:
         db.close()
+
+
+def test_informational_rate_limit_is_route_specific_and_preserves_records(tmp_path):
+    db = Outbox(tmp_path / "events.db", "PEEK")
+    try:
+        adapter = NativeEventAdapter(db, parse_modes("notify_gcode_response=both"))
+        packet = {"method": "notify_gcode_response", "params": ["ok"]}
+        assert adapter.observe(packet, 100)
+        assert adapter.observe(packet, 100.1)
+        rows = db.unrouted()
+        first, second = [row["id"] for row in rows]
+        db.ensure_routes(first, ("direct", "agent"))
+        db.ensure_routes(second, ("direct", "agent"))
+        assert db.allow_notification(first, "direct", "notify_gcode_response", 10)
+        assert db.allow_notification(first, "direct", "notify_gcode_response", 10)
+        assert not db.allow_notification(second, "direct", "notify_gcode_response", 10)
+        assert db.allow_notification(second, "agent", "notify_gcode_response", 10)
+        db.route_suppressed(second, "direct", "rate limit")
+        assert db.conn.execute("SELECT COUNT(*) FROM alerts").fetchone()[0] == 2
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_subscription_rejection_keeps_transport_available(tmp_path):
+    cfg = settings(tmp_path)
+    db = Outbox(cfg.sqlite_path, cfg.printer)
+    rejected = asyncio.Event()
+
+    class Socket:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def send_json(self, request):
+            self.request = request
+
+        async def receive(self, **kwargs):
+            if not rejected.is_set():
+                rejected.set()
+                return SimpleNamespace(type=aiohttp.WSMsgType.TEXT, data=json.dumps({
+                    "id": self.request["id"], "error": {"code": 500}}))
+            await asyncio.Future()
+
+    session = SimpleNamespace(ws_connect=lambda *a, **kw: Socket())
+    monitor = Monitor(cfg, db)
+    task = asyncio.create_task(monitor._listen(session))
+    try:
+        await asyncio.wait_for(rejected.wait(), 1)
+        assert not task.done()
+        assert db.get_meta("transport_connected") is True
+        assert not monitor.subscription_active
+        assert db.get_meta("subscription_health")["state"] == "degraded"
+        assert "monitor_degraded" in {row["kind"] for row in db.unrouted()}
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        db.close()
