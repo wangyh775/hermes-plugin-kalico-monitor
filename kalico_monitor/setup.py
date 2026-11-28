@@ -434,7 +434,9 @@ def main(argv: list[str] | None = None) -> None:
         from .monitor_cfg import cfg_path
         _, rules = load_extensions(cfg_path(path))
         handlers = load_handlers(cfg_path(path))
+        from .policy import validate_modes
         modes = parse_modes(values["KALICO_EVENT_MODES"])
+        validate_modes(modes, rules)
         for rule in rules:
             modes.setdefault(rule.name, rule.mode)
         if any(v in {"agent", "both"} for v in modes.values()) and not values["HERMES_AGENT_WEBHOOK_URL"]:

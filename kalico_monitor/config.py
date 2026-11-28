@@ -63,8 +63,8 @@ class Settings:
         for handler in handler_config.handlers.values():
             resolve_agent_url(agent_url, handler)
         modes = get("KALICO_EVENT_MODES", "").strip()
-        from .policy import parse_modes
-        parse_modes(modes)
+        from .policy import parse_modes, validate_modes
+        validate_modes(parse_modes(modes), event_rules)
         base = Path(get("XDG_STATE_HOME", str(Path.home() / ".local/state")))
         db = Path(get("KALICO_MONITOR_DB", str(base / "kalico-monitor/alerts.sqlite3"))).expanduser()
         report_minutes = int(get("KALICO_PROGRESS_REPORT_MINUTES", "0"))

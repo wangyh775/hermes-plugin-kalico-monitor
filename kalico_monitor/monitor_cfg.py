@@ -127,6 +127,11 @@ def render_cfg(values: dict[str, str]) -> str:
 def save_cfg(path: Path, values: dict[str, str]) -> None:
     """Atomic 0600 replacement, failing closed on symlinks or invalid values."""
     from .custom_config import preserved_extension_text
+    from .custom_config import load_extensions
+    from .policy import validate_modes
+
+    _, rules = load_extensions(path)
+    validate_modes(parse_modes(values.get("KALICO_EVENT_MODES", "")), rules)
     content = render_cfg(values) + preserved_extension_text(path)
     if path.is_symlink():
         raise ValueError(f"拒绝覆盖符号链接形式的 Monitor CFG：{path}")

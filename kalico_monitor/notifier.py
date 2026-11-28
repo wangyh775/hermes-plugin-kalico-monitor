@@ -29,6 +29,9 @@ def make_request(alert: dict, secret: str, printer: str, timestamp: int | None =
         "alert_id": alert["id"],
     }
     payload.update(row_metadata(alert))
+    # Preserve legacy occurred_at (queue time); do not invent source time.
+    payload.update(queued_at=payload['occurred_at'], received_at=alert.get('received_at'),
+                   source_occurred_at=None)
     if alert.get("payload"):
         payload["event"] = json.loads(alert["payload"])
     if route == "direct":

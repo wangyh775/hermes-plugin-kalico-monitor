@@ -20,11 +20,26 @@ class EventDefinition:
     native_method: str | None = None
     explicit_only: bool = False
     forwardable: bool = True
+    severity: str = "info"
+    default_mode: str = "direct"
+    schema_version: int = 1
+    dedup_policy: str = "source_or_sequence"
+
+
+SEVERITIES = {
+    "paused": "warning", "error": "critical", "klippy_shutdown": "critical",
+    "klippy_disconnected": "critical", "moonraker_unreachable": "critical",
+    "stalled": "warning", "filament_jam_detected": "warning",
+    "filament_runout_detected": "warning", "filament_jam_confirmed": "critical",
+    "filament_recovery_failed": "warning", "monitor_degraded": "warning",
+    "notify_cpu_throttled": "warning",
+}
 
 
 def _group(names, source_type, source, source_object=None):
     return {
-        kind: EventDefinition(kind, source_type, source, title, source_object)
+        kind: EventDefinition(kind, source_type, source, title, source_object,
+                              severity=SEVERITIES.get(kind, "info"))
         for kind, title in names.items()
     }
 
@@ -41,6 +56,7 @@ BUILTINS = {
     **_group({
         "stalled": "打印停滞", "print_progress": "定时进度",
         "moonraker_unreachable": "Moonraker 断开", "moonraker_recovered": "Moonraker 恢复",
+        "monitor_degraded": "监控能力退化", "monitor_recovered": "监控能力恢复",
     }, "monitor_internal", "monitor"),
     **_group({
         "filament_jam_detected": "疑似堵头", "filament_runout_detected": "断料或送料异常",
@@ -87,6 +103,8 @@ NATIVE = {
     method: EventDefinition(
         method, "moonraker_native", "moonraker", title,
         native_method=method, explicit_only=True, forwardable=method in _FORWARD,
+        severity=SEVERITIES.get(method, "info"), default_mode="off",
+        dedup_policy="identical_consecutive_payload_short_window",
     )
     for method, title in {**_FORWARD, **_CATALOG_ONLY}.items()
 }
@@ -98,7 +116,8 @@ def definition(kind: str, rules=()) -> EventDefinition | None:
         return REGISTRY[kind]
     for rule in rules:
         if rule.name == kind:
-            return EventDefinition(kind, "custom_rule", "moonraker", "自定义数值规则", rule.object)
+            return EventDefinition(kind, "custom_rule", "moonraker", "自定义数值规则", rule.object,
+                                   severity=rule.severity, default_mode=rule.mode)
     return None
 
 

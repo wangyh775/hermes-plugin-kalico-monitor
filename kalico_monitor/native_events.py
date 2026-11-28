@@ -1,6 +1,7 @@
 """Opt-in Moonraker notification adapter; bounded, read-only, best effort."""
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 import uuid
@@ -10,7 +11,7 @@ from .events import Alert
 from .policy import routes_for
 
 MAX_PAYLOAD_BYTES = 16384
-COOLDOWN_SECONDS = 30
+COOLDOWN_SECONDS = 2
 
 
 class NativeEventAdapter:
@@ -40,14 +41,17 @@ class NativeEventAdapter:
         except UnicodeError:
             return False
         now = time.monotonic() if now is None else now
-        if method in self.last and now - self.last[method] < COOLDOWN_SECONDS:
+        fingerprint = hashlib.sha256(serialized.encode()).hexdigest()
+        previous = self.last.get(method)
+        if previous and previous[0] == fingerprint and now - previous[1] < COOLDOWN_SECONDS:
             return False
+        summary = json.dumps(params, ensure_ascii=False, allow_nan=False)[:1000]
         alert = Alert(
-            kind=method, generation=0, filename="", detail=entry.description,
-            severity="warning" if method == "notify_cpu_throttled" else "info",
-            source_id=uuid.uuid4().hex, payload={"params": params},
+            kind=method, generation=0, filename="", detail=f"{entry.description}: {summary}",
+            severity=entry.severity,
+            source_id=uuid.uuid4().hex, payload={"params": params, "params_summary": summary},
             source_method=method, trigger="notification",
         )
         self.store.enqueue(alert)
-        self.last[method] = now
+        self.last[method] = (fingerprint, now)
         return True

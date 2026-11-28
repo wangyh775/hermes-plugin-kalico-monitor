@@ -5,6 +5,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
+from .event_registry import BUILTINS
 from .watch import compare, sample_from_status
 
 
@@ -29,11 +30,7 @@ class Alert:
         return base if self.sequence is None else f"{base}:{self.sequence}"
 
 
-SEVERITY = {
-    "started": "info", "resumed": "info", "complete": "info",
-    "cancelled": "info", "paused": "warning",
-    "stalled": "warning", "error": "critical", "klippy_shutdown": "critical",
-}
+SEVERITY = {name: entry.severity for name, entry in BUILTINS.items()}
 
 
 class EventProcessor:
@@ -45,16 +42,22 @@ class EventProcessor:
         self.has_snapshot = False
 
     def _alerts(self, events: list[dict], sample: dict,
-                source_method: str | None, trigger: str | None) -> list[Alert]:
+                source_method: str | None, trigger: str | None,
+                previous: dict | None) -> list[Alert]:
         out = []
         for event in events:
             detail = event["detail"].strip()
             if event["kind"] in ("error", "klippy_shutdown") and self.recent_errors:
                 detail += " | Recent G-code: " + " / ".join(list(self.recent_errors)[-3:])
+            from .reports import report_fields
+            payload = {**report_fields(self.status),
+                       "previous_state": (previous or {}).get("state"),
+                       "current_state": sample["state"],
+                       "klippy_state": sample["klippy_state"]}
             out.append(Alert(kind=event["kind"], generation=event["generation"],
                              filename=sample["filename"], detail=detail[:1500],
                              severity=SEVERITY[event["kind"]],
-                             sequence=event.get("sequence"),
+                             sequence=event.get("sequence"), payload=payload,
                              source_method=source_method if event["kind"] != "stalled" else None,
                              trigger=trigger if event["kind"] != "stalled" else "timer"))
         return out
@@ -77,13 +80,14 @@ class EventProcessor:
     def evaluate(self, now: float, *, source_method=None, trigger="timer", allow_stall=True) -> tuple[dict, list[Alert]]:
         sample = sample_from_status(self.status)
         old_generation = self.previous.get("generation", 0) if self.previous else 0
-        current, events = compare(self.previous, sample, now, self.stall_minutes, allow_stall=allow_stall)
+        previous = self.previous
+        current, events = compare(previous, sample, now, self.stall_minutes, allow_stall=allow_stall)
         # Error messages are job-specific: a new print must not inherit G-code
         # errors from the preceding task.
         if current["generation"] > old_generation:
             self.recent_errors.clear()
         self.previous = current
-        return current, self._alerts(events, sample, source_method, trigger)
+        return current, self._alerts(events, sample, source_method, trigger, previous)
 
     def ingest_gcode_response(self, message: Any) -> None:
         if not isinstance(message, str):

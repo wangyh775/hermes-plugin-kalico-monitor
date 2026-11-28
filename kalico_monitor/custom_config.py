@@ -23,6 +23,8 @@ MESSAGE_FIELDS = {
     "diagnostic_speed_mm_s", "result", "reason", "step_mm", "total_mm",
     "window_summary", "object", "field", "value", "threshold",
     "source_type", "source", "source_method", "source_object", "trigger",
+    "received_at", "queued_at", "source_occurred_at", "previous_state", "current_state",
+    "klippy_state", "params_summary",
 }
 DEFAULT_MESSAGE_FIELDS = (
     "printer", "kind", "severity", "occurred_at", "filename", "detail", "alert_id",
@@ -130,7 +132,16 @@ def load_extensions(path: Path) -> tuple[dict[str, tuple[str, ...]], tuple[Event
                 raise ValueError("自定义事件最多 32 个")
         else:
             raise ValueError(f"不支持的 monitor.cfg 配置节：{section}")
+    from .event_registry import definition
     from .handlers import parse_handlers
+    from .policy import validate_modes
+    if parser.has_section("events"):
+        validate_modes(dict(parser.items("events")), rules)
+    for kind in messages:
+        if kind != "default":
+            entry = definition(kind, rules)
+            if not entry or not entry.forwardable:
+                raise ValueError(f"消息配置引用未知或不可转发事件：{kind}")
     parse_handlers(parser, rules, MESSAGE_FIELDS)
     return messages, tuple(rules)
 
