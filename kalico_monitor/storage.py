@@ -160,6 +160,16 @@ class Outbox:
                 (time.time(), "permanent failure: " + reason[:180], alert_id, route))
             self._finalize_routes(alert_id)
 
+    def journal_checkpoint(self, cursor: dict, alert: Alert, gap: Alert | None = None) -> bool:
+        with self.conn:
+            digest = self.alert_id(alert)
+            existed = self.conn.execute('SELECT 1 FROM alerts WHERE id=?', (digest,)).fetchone()
+            if gap is not None:
+                self._insert(gap)
+            self._insert(alert)
+            self._set_meta('filament_cursors_v1', cursor)
+            return not existed and self.conn.execute('SELECT 1 FROM alerts WHERE id=?', (digest,)).fetchone() is not None
+
     def enqueue_source(self, alert: Alert) -> bool:
         """Insert once across reconnects and process restarts."""
         with self.conn:

@@ -37,6 +37,7 @@ def sample_from_status(status: dict) -> dict:
         "file_position": as_number(virtual.get("file_position")),
         "progress": as_number(virtual.get("progress")),
         "total_duration": as_number(stats.get("total_duration")),
+        "job_identity": status.get("_monitor_job", {}).get("identity"),
     }
 
 
@@ -55,6 +56,7 @@ def initial_state(sample: dict, now: float) -> dict:
         "progress": sample["progress"],
         "progress_changed_at": now,
         "total_duration": sample.get("total_duration"),
+        "job_identity": sample.get("job_identity"),
         "stall_open": False,
     }
 
@@ -89,7 +91,10 @@ def compare(previous: dict | None, sample: dict, now: float, stall_minutes: int 
              and sample.get("file_position") is not None
              and previous.get("file_position") is not None
              and sample["file_position"] < previous["file_position"])
-    new_job = new_print == "printing" and (reset or
+    identity = sample.get("job_identity")
+    old_identity = previous.get("job_identity")
+    identity_changed = bool(identity and old_identity and identity != old_identity)
+    new_job = new_print == "printing" and (reset or identity_changed or
         old_print in ("", "standby", "complete", "error", "cancelled")
         or (bool(sample["filename"]) and sample["filename"] != old_filename)
     )
@@ -161,6 +166,7 @@ def compare(previous: dict | None, sample: dict, now: float, stall_minutes: int 
         "file_position": sample["file_position"],
         "progress": sample["progress"], "progress_changed_at": changed_at,
         "total_duration": sample.get("total_duration"),
+        "job_identity": identity if identity else (old_identity if not new_job else None),
         "stall_open": stall_open,
     })
     return state, events

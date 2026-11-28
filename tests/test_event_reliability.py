@@ -169,7 +169,8 @@ def test_threshold_restart_and_stale_observation(tmp_path):
         assert engine.evaluate(SNAPSHOT, 300) == 0
         assert engine.evaluate(SNAPSHOT, 310, field_seen={("extruder", "temperature"): 100}) == 0
         assert engine.evaluate(SNAPSHOT, 311, field_seen={("extruder", "temperature"): 311}) == 0
-        assert engine.evaluate(SNAPSHOT, 321, field_seen={("extruder", "temperature"): 320}) == 1
+        assert engine.evaluate(SNAPSHOT, 321, field_seen={("extruder", "temperature"): 320}) == 0
+        assert engine.evaluate(SNAPSHOT, 322, field_seen={("extruder", "temperature"): 322}) == 1
     finally:
         db.close()
 

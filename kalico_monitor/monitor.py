@@ -9,20 +9,20 @@ import asyncio
 import json
 import logging
 import math
-import uuid
 import time
+import uuid
 from dataclasses import replace
 
 import aiohttp
 
 from .config import Settings
+from .event_registry import REGISTRY
 from .events import Alert, EventProcessor
 from .filament_events import OBJECT as FILAMENT_OBJECT
 from .filament_events import FilamentEventTracker
 from .handlers import agent_url
 from .native_events import NativeEventAdapter
 from .notifier import PermanentPayloadError, deliver
-from .event_registry import REGISTRY
 from .policy import parse_modes, routes_for, validate_modes
 from .reports import PeriodicReporter
 from .rule_engine import RuleEngine, numeric_field
@@ -159,7 +159,7 @@ class Monitor:
                 LOG.warning("queued %s %s", alert.kind, alert.detail)
 
     def _record(self, processor: EventProcessor, current: dict, alerts: list[Alert],
-                source_method=None) -> None:
+                source_method=None, source_eventtime=None, received_at=None) -> None:
         """Persist lifecycle events even when a force alarm also caused PAUSE.
 
         A force alarm and a print-state transition answer different questions:
@@ -277,7 +277,8 @@ class Monitor:
                          item["kind"], item["id"], route)
             await asyncio.sleep(0.2)
 
-    def _process_snapshot(self, processor: EventProcessor, snapshot: dict, source_method=None):
+    def _process_snapshot(self, processor: EventProcessor, snapshot: dict, source_method=None,
+                          source_eventtime=None, received_at=None):
         self._heartbeat()
         self.last_status_received_at = time.monotonic()
         self.subscription_active = True
@@ -286,14 +287,16 @@ class Monitor:
         self.reset_stall_clock = False
         self.field_seen.clear()
         self._remember_fields(snapshot)
-        self._capabilities(snapshot)
+        self._capabilities({k: v for k, v in snapshot.items() if k != '_monitor_job'})
         if self.ws_offline_notified:
             self._system_alert("moonraker_recovered", self.ws_offline_id,
                                "Moonraker subscription restored", "info")
         self.ws_offline_since = None
         self.ws_offline_notified = False
         state, alerts = processor.set_snapshot(snapshot, time.monotonic(), allow_stall=False)
-        self._record(processor, state, alerts)
+        eventtime = source_eventtime if type(source_eventtime) in (int, float) and abs(source_eventtime) < 1e15 else None
+        self._record(processor, state, alerts, source_method=source_method,
+                     source_eventtime=eventtime, received_at=received_at)
         hooks = snapshot.get("webhooks", {})
         if isinstance(hooks, dict) and hooks.get("state") == "ready":
             self._klippy_recovered(source_method)
@@ -388,6 +391,24 @@ class Monitor:
                                "Moonraker has lost its connection to Kalico",
                                source_method=self.disconnect_method, trigger="disconnect_confirmed")
             self.klippy_down_alerted = True
+
+    async def _active_job(self, session, headers, filename):
+        """Best-effort history identity; never block monitoring on missing history."""
+        if not isinstance(filename, str) or not hasattr(session, 'get'):
+            return None
+        try:
+            async with session.get(self.settings.moonraker_url + "/server/history/list",
+                                   params={"limit": 5, "order": "desc"}, headers=headers,
+                                   timeout=aiohttp.ClientTimeout(total=2)) as response:
+                response.raise_for_status()
+                body = await response.json()
+            for job in body.get("result", {}).get("jobs", []):
+                if (isinstance(job, dict) and job.get("filename") == filename
+                        and job.get("status") == "in_progress" and isinstance(job.get("job_id"), str)):
+                    return f"{job['job_id']}:{job.get('start_time', '')}"
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, TypeError, AttributeError):
+            pass
+        return None
 
     async def _rule_objects(self, session: aiohttp.ClientSession, headers: dict) -> tuple[str, ...]:
         """Only subscribe to existing optional objects; never block base monitoring."""
@@ -512,7 +533,12 @@ class Monitor:
                         raise RuntimeError("Moonraker subscription missing core objects")
                     pending = False
                     last_refresh = time.monotonic()
-                    self._process_snapshot(processor, snapshot, subscription_cause)
+                    if not self.subscription_active and snapshot['print_stats'].get('state') in ('printing', 'paused'):
+                        identity = await self._active_job(session, headers, snapshot['print_stats'].get('filename'))
+                        if identity:
+                            snapshot = {**snapshot, '_monitor_job': {'identity': identity}}
+                    self._process_snapshot(processor, snapshot, subscription_cause,
+                                           source_eventtime=result.get('eventtime'), received_at=packet_received_at)
                     subscription_cause = None
                     continue
                 if query_pending is not None and reply_id == query_pending:

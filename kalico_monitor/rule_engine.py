@@ -52,6 +52,7 @@ class RuleEngine:
             if isinstance(state, dict) and (state.get("since") is not None or state.get("last") is not None):
                 state["since"] = None
                 state["last"] = None
+                state["last_observation"] = None
                 changed = True
         if changed:
             self.store.set_meta(META_KEY, self.tracker)
@@ -82,15 +83,21 @@ class RuleEngine:
             value = numeric_field(status, rule.object, rule.field) if connected and fresh else None
             active = value is not None and matched(value, rule.condition, rule.threshold)
             observed = now if field_seen is None else field_seen.get((rule.object, rule.field.split(".")[0]))
-            state["quality"] = "valid" if value is not None else ("stale" if not fresh else "unavailable")
+            state["quality"] = ("unavailable" if not connected or rule.object not in status else
+                                "stale" if not fresh else "invalid" if value is None else "valid")
             since = state.get("since")
             if not active:
                 state["since"] = None
+                state["last_observation"] = None
                 if value is not None:
                     state["fired"] = False
             else:
-                if not isinstance(since, (int, float)) or since > now:
+                last_observation = state.get("last_observation")
+                if (not isinstance(since, (int, float)) or since > now
+                        or (observed is not None and last_observation is not None
+                            and observed - last_observation > 35)):
                     state["since"] = observed if observed is not None else now
+                state["last_observation"] = observed
                 last = state.get("last")
                 cooldown_ok = (not isinstance(last, (int, float))
                                or now - last >= rule.cooldown)

@@ -126,6 +126,25 @@
     },
     "message": {
       "type": "string"
+    },
+    "source_eventtime": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "source_clock_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "generated_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
     }
   },
   "additionalProperties": true

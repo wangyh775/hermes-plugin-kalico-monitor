@@ -1,8 +1,8 @@
 """Read-only bridge for the filament_force Klippy status event journal."""
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import math
 from typing import Any
 
@@ -91,7 +91,10 @@ class FilamentEventTracker:
         valid = []
         for event in events:
             if not valid_event(event):
-                raw = json.dumps(event, ensure_ascii=True, default=str)
+                try:
+                    raw = json.dumps(event, ensure_ascii=True, default=str)
+                except (TypeError, ValueError, RecursionError):
+                    raw = "<unserializable journal event>"
                 key = hashlib.sha256(raw.encode()).hexdigest()
                 self.store.quarantine(key, "filament_force", "invalid journal event", raw[:1000])
                 continue
@@ -99,12 +102,12 @@ class FilamentEventTracker:
         for event in sorted(valid, key=lambda item: (item["boot_id"], item["seq"])):
             boot, seq = event["boot_id"], event["seq"]
             last = cursor.get(boot, 0)
-            if seq > last + 1:
+            gap = None
+            if seq > last + 1 and boot in cursor:
                 gap = Alert("event_gap_detected", 0, "", f"filament_force {boot}: {last+1}..{seq-1} missing",
                             "warning", source_id=f"{boot}:{last+1}:{seq-1}",
                             payload={"boot_id": boot, "missing_from": last+1, "missing_to": seq-1"},
                             trigger="extension_journal_gap")
-                self.store.enqueue(gap)
             kind = event["kind"]
             filename = event.get("filename") or state.get("filename", "")
             filename = filename[:180] if isinstance(filename, str) else ""
@@ -115,8 +118,7 @@ class FilamentEventTracker:
                           filename=filename, detail=detail(event),
                           severity=EVENTS[kind][1], source_id=event["event_id"],
                           payload=event, trigger="extension_journal", source_method=source_method)
-            count += int(self.store.enqueue_source(alert))
             if seq > last:
                 cursor[boot] = seq
-                self.store.set_meta('filament_cursors_v1', cursor)
+            count += int(self.store.journal_checkpoint(cursor, alert, gap))
         return count
