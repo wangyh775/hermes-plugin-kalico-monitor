@@ -89,6 +89,10 @@ class Outbox:
 
     def ensure_routes(self, alert_id: str, routes: tuple[str, ...]) -> None:
         with self.conn:
+            if not routes:
+                self.conn.execute("UPDATE alerts SET delivered=?, last_error=? WHERE id=? AND delivered IS NULL AND NOT EXISTS (SELECT 1 FROM alert_routes WHERE alert_id=?)",
+                                  (time.time(), "suppressed by event policy", alert_id, alert_id))
+                return
             for route in routes:
                 self.conn.execute("""INSERT OR IGNORE INTO alert_routes
                     (alert_id,route,next_retry) VALUES (?,?,?)""",
