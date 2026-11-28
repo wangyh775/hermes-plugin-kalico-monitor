@@ -52,7 +52,7 @@ The printer and AI host may be separate machines on a mutually reachable LAN; th
 - Per-event `direct`, `agent`, or `both` delivery via `KALICO_EVENT_MODES`, with an optional second Hermes Agent webhook. Durable independent retry records in SQLite and route-specific idempotency IDs; the default remains `direct`.
 - Interactive `kalico-monitor config` wizard, including optional event policies in menu `8`, masked secrets, and read-only connectivity check.
 
-**Not implemented:** Generic conditional per-event YAML rules, multi-printer aggregation, remote printer control, and individual alerts for successful first-layer Z adjustments. The latest Kalico PR #13 supports first-layer Z adjustment, but this bridge currently alerts primarily when its `trigger_count` changes on a pause request.
+**Not implemented:** Generic conditional per-event YAML rules, multi-printer aggregation, remote printer control, and individual alerts for successful first-layer Z adjustments from the legacy PR #13 bridge (the new filament_force journal does emit these). The latest Kalico PR #13 supports first-layer Z adjustment, but this bridge currently alerts primarily when its `trigger_count` changes on a pause request.
 
 ## Linux one-click installer
 
@@ -64,7 +64,7 @@ bash install.sh
 
 The Linux setup also verifies and enables **login-free boot for Kalico Monitor** using a systemd user unit and logind Linger (may request sudo authorization). This does not change Hermes startup. To check or retry independently, run `bash install.sh --check-autostart` or `bash install.sh --enable-autostart`.
 
-It prompts for the Moonraker URL, safely merges Hermes webhook routes without replacing existing Feishu/model settings, installs the Hermes plugin, manages the Monitor systemd user service, creates timestamped backups, and verifies the HTTP endpoints plus a harmless signed Feishu test notification. Default printer is `PEEK-01` and critical events use `both`. Full prerequisites, safeguards and limits: [Linux one-click guide](docs/ONE_CLICK_INSTALL.zh-CN.md). The feature is under review in PR #9 until merged.
+It prompts for the Moonraker URL, safely merges Hermes webhook routes without replacing existing Feishu/model settings, installs the Hermes plugin, manages the Monitor systemd user service, creates timestamped backups, and verifies the HTTP endpoints plus a harmless signed Feishu test notification. Default printer is `PEEK-01` and critical events use `both`. Full prerequisites, safeguards and limits: [Linux one-click guide](docs/ONE_CLICK_INSTALL.zh-CN.md). 
 
 ## Reconfigure an existing installation
 
@@ -104,4 +104,18 @@ PR #7 (configuration wizard) and PR #8 (per-event Hermes routing) have been merg
 
 ### filament_force event bridge
 
-Enable KALICO_WATCH_NOZZLE_FORCE=1 to subscribe to the legacy nozzle_force_monitor and new filament_force.events journal. JAM, runout, diagnosis, confirmed resistance, Z adjustment and recovery events have independent routing. SQLite deduplicates source event IDs and retains the structured payload, forwarded in the signed Hermes webhook as event. Force traces are bounded peak-preserving samples, not full-rate ADC recordings. See [event protocol](https://github.com/wangyh775/klipper-filament-force/blob/feature/diagnostic-recovery-fsm/docs/events.md).
+Enable KALICO_WATCH_NOZZLE_FORCE=1 to subscribe to the legacy nozzle_force_monitor and new filament_force.events journal. JAM, runout, diagnosis, confirmed resistance, Z adjustment and recovery events have independent routing. SQLite deduplicates source event IDs and retains the structured payload, forwarded in the signed Hermes webhook as event. Force traces are bounded peak-preserving samples, not full-rate ADC recordings. See [event protocol](https://github.com/wangyh775/klipper-filament-force/blob/main/docs/events.md).
+
+## Bilingual engineering documentation
+
+![Event routing](docs/media/en/12-routing.svg)
+
+- [Installation and upgrade](docs/INSTALL.md)
+- [Configuration](docs/CONFIGURATION.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Events](docs/EVENTS.md)
+- [Event routing](docs/EVENT_ROUTING.md)
+- [Integration](docs/INTEGRATION.md)
+- [Commands](docs/COMMANDS.md)
+- [Troubleshooting](docs/TROUBLESHOOTING.md)
+- [Testing and acceptance](docs/TESTING.md)

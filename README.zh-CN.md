@@ -36,7 +36,7 @@ Kalico + Moonraker --LAN HTTP/WS--> Kalico Monitor (systemd + SQLite)
 | SQLite 告警持久化、失败重试和去重 | 已实现 |
 | 打印过程定时状态报告 | 可选，默认关闭 |
 | 停滞检测 | 可选，默认关闭 |
-| 自定义 `nozzle_force_monitor` 疑似堵头告警 | 可选，默认关闭；依赖 [Kalico PR #13](https://github.com/wangyh775/kalico/pull/13) |
+| 旧版 `nozzle_force_monitor` 疑似堵头告警 | 可选，默认关闭；依赖 [Kalico PR #13](https://github.com/wangyh775/kalico/pull/13) |
 | `/kalico status/temp/force/alerts/health` 零 LLM 查询 | 已实现；由 Hermes 授权，可选附加聊天白名单 |
 | 按事件设置 `direct` / `agent` / `both` | 已实现，默认全部 `direct` |
 | SQLite 双路投递、独立重试与幂等 ID | 已实现 |
@@ -149,3 +149,17 @@ KALICO_EVENT_MODES=klippy_shutdown=both,nozzle_force_anomaly=both
 ### filament_force 事件接入
 
 启用 KALICO_WATCH_NOZZLE_FORCE=1 后兼容旧 nozzle_force_monitor 和新 filament_force.events。支持堵头、断料、诊断结果、确认高阻力、Z 补偿和恢复状态事件。每条事件携带唯一 ID，Monitor 保存 SQLite payload 并在 Hermes 签名 Webhook 的 event 字段转发受力窗口等结构化数据。详见 [事件文档](docs/EVENTS.zh-CN.md)。
+
+## 中英文工程文档
+
+![事件路由](docs/media/zh-CN/12-routing.svg)
+
+- [安装与升级](docs/INSTALL.zh-CN.md)
+- [配置参考](docs/CONFIGURATION.zh-CN.md)
+- [系统架构](docs/ARCHITECTURE.zh-CN.md)
+- [事件接口](docs/EVENTS.zh-CN.md)
+- [事件路由](docs/EVENT_ROUTING.zh-CN.md)
+- [系统集成](docs/INTEGRATION.zh-CN.md)
+- [命令参考](docs/COMMANDS.zh-CN.md)
+- [故障排查](docs/TROUBLESHOOTING.zh-CN.md)
+- [测试与验收](docs/TESTING.zh-CN.md)

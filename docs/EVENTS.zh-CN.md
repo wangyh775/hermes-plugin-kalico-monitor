@@ -1,3 +1,44 @@
+# 事件接口
+
+简体中文 | [English](EVENTS.md) · [首页](../README.zh-CN.md)
+
+> 依据 main 提交 0c47b84（PR #21 已合并）。Monitor 只读，打印机—Hermes—飞书实机验收尚未完成。
+
+下列为 Monitor 路由名称，并非全部是 Moonraker 原生方法。生命周期由 print_stats 推导；连接通知和超时独立；受力事件携带生产方负载，暂停独立。
+
+| kind | 触发 | 级别 |
+|---|---|---|
+| `started` | 状态推导开始 | info |
+| `paused` | 打印转暂停 | warning |
+| `resumed` | 暂停转打印 | info |
+| `complete` | 打印完成 | info |
+| `cancelled` | 取消打印 | info |
+| `error` | 打印错误 | critical |
+| `stalled` | 配置的停滞 | warning |
+| `print_progress` | 定时报告 | info |
+| `klippy_shutdown` | 固件停机 | critical |
+| `klippy_disconnected` | 固件确认断连 | critical |
+| `klippy_recovered` | 固件恢复 | info |
+| `moonraker_unreachable` | Moonraker 不可达 | critical |
+| `moonraker_recovered` | Moonraker 恢复 | info |
+| `nozzle_force_anomaly` | 旧回弹异常 | warning |
+| `filament_jam_detected` | 疑似堵头 | warning |
+| `filament_runout_detected` | 断料/送料异常 | warning |
+| `filament_diagnosis_result` | 浮空诊断结果 | info |
+| `filament_jam_confirmed` | 重复高阻力 | critical |
+| `filament_z_adjusted` | 补偿偏移确认 | info |
+| `filament_recovery_started` | 恢复验证 | info |
+| `filament_recovery_verified` | 健康窗口 | info |
+| `filament_recovery_failed` | 已覆盖失败路径 | warning |
+
+Webhook 外层：printer、kind、severity、filename、detail、occurred_at、alert_id，可选 event（新受力事件）。occurred_at 是本地接收/入库时间，不是 MCU 时间。HMAC-SHA256 对 timestamp + '.' + 原始正文签名；X-Webhook-Timestamp、X-Webhook-Signature-V2、X-Request-ID。源 ID 跨重连去重，投递可重试，不保证传输严格一次。Agent 接收不等于最终投递。
+
+---
+
+## 既有部署细节与历史说明（保留）
+
+以下为原有详细说明；若旧版本描述与前面当前源码基准冲突，以前面为准。
+
 # 事件与只读命令
 
 本页以当前 main 代码为准。**Kalico 本地负责控制；Monitor 只读识别事件；Hermes 负责投递。**
@@ -65,4 +106,4 @@ Kalico -> Moonraker 状态订阅 -> Monitor 事件识别
 
 支持 filament_jam_detected、filament_runout_detected、filament_diagnosis_result、filament_jam_confirmed、filament_z_adjusted、filament_recovery_started、filament_recovery_verified、filament_recovery_failed。各事件可配置 direct/agent/both/off；普通 paused/resumed 等生命周期事件仍独立发送。源事件 ID 由 Klippy boot_id 与序号组成，SQLite 去重，完整传输 payload 保存到 alerts.payload 并通过签名 Webhook JSON 的 event 字段发送；直接通知模板仍使用简短 detail，代理路由可使用 event 数据（需对应 Hermes 模板）。堵头窗口为保峰降采样，不是全速原始 ADC 文件。
 
-Klippy 仅保存最近 16 条内存事件；断线过久或 Klippy 重启可能丢失未接收事件。Monitor 收到后持久化。协议见 [filament_force 事件文档](https://github.com/wangyh775/klipper-filament-force/blob/feature/diagnostic-recovery-fsm/docs/events.md)。
+Klippy 仅保存最近 16 条内存事件；断线过久或 Klippy 重启可能丢失未接收事件。Monitor 收到后持久化。协议见 [filament_force 事件文档](https://github.com/wangyh775/klipper-filament-force/blob/main/docs/events.md)。
