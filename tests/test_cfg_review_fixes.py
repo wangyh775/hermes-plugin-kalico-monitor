@@ -7,7 +7,7 @@ from kalico_monitor.events import Alert
 from kalico_monitor.monitor_cfg import read_cfg, save_cfg
 from kalico_monitor.policy import parse_modes, routes_for
 from kalico_monitor.quick import format_alerts, read_monitor
-from kalico_monitor.setup import defaults, read_env, save_local_config
+from kalico_monitor.setup import defaults, read_env, save_local_config, wizard
 from kalico_monitor.storage import Outbox
 
 
@@ -179,3 +179,15 @@ def test_feishu_target_drift_is_detected_before_claiming_success():
     config["platforms"]["webhook"]["extra"]["routes"][
         "kalico-analysis"].pop("deliver_extra")
     assert count_inherited_feishu_targets(values, config) == 1
+
+
+def test_standalone_wizard_clears_chat_id_in_both_files(tmp_path):
+    env = tmp_path / "monitor.env"
+    values = defaults()
+    values["HERMES_WEBHOOK_SECRET"] = "x" * 64
+    values["KALICO_DIRECT_CHAT_ID"] = "oc_previous"
+    save_local_config(env, values)
+    answers = iter(["10", "-", "", "7", "y"])
+    assert wizard(env, ask=lambda _="": next(answers), out=lambda _: None)
+    assert read_env(env)["KALICO_DIRECT_CHAT_ID"] == ""
+    assert read_cfg(tmp_path / "monitor.cfg")["KALICO_DIRECT_CHAT_ID"] == ""
