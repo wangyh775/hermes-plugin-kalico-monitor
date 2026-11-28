@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import sqlite3
 import time
 from pathlib import Path
@@ -105,7 +106,8 @@ class Outbox:
     def _quarantine(self, key, kind, route, reason, data):
         self.conn.execute("""INSERT OR IGNORE INTO dead_letters
             (id,kind,route,reason,created,data) VALUES (?,?,?,?,?,?)""",
-            (key, str(kind)[:100], route, str(reason)[:300], time.time(),
+            (key, str(kind).encode("utf-8", "replace").decode()[:100], route,
+             str(reason).encode("utf-8", "replace").decode()[:300], time.time(),
              json.dumps(data, ensure_ascii=True, default=str)[:4096]))
 
     def quarantine(self, key, kind, reason, data):
@@ -332,6 +334,14 @@ class Outbox:
         with self.conn:
             self.conn.execute("""UPDATE alerts SET attempts=?,next_retry=?,last_error=?
                 WHERE id=?""", (attempts, time.time() + delay, error[:240], alert_id))
+
+    def update_storage_health(self) -> dict:
+        size = sum(p.stat().st_size for p in (self.path, Path(str(self.path) + "-wal")) if p.exists())
+        free = shutil.disk_usage(self.path.parent).free
+        health = {"bytes": size, "disk_free": free,
+                  "pressure": size >= 256 * 1024**2 or free < 128 * 1024**2}
+        self.set_meta("storage_health", health)
+        return health
 
     def archive_info(self, before: float, limit: int = 500) -> int:
         """Compact terminal G-code records only; keep IDs and route audit."""

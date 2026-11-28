@@ -21,6 +21,10 @@ def as_number(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def _safe_text(value: Any) -> str:
+    return value.encode('utf-8', 'replace').decode('utf-8') if isinstance(value, str) else ''
+
+
 def sample_from_status(status: dict) -> dict:
     stats = status.get("print_stats", {})
     virtual = status.get("virtual_sdcard", {})
@@ -29,11 +33,11 @@ def sample_from_status(status: dict) -> dict:
     virtual = virtual if isinstance(virtual, dict) else {}
     hooks = hooks if isinstance(hooks, dict) else {}
     return {
-        "filename": stats.get("filename") if isinstance(stats.get("filename"), str) else "",
+        "filename": _safe_text(stats.get("filename")),
         "state": stats.get("state") if isinstance(stats.get("state"), str) else "",
-        "message": stats.get("message") if isinstance(stats.get("message"), str) else "",
+        "message": _safe_text(stats.get("message")),
         "klippy_state": hooks.get("state") if isinstance(hooks.get("state"), str) else "",
-        "klippy_message": hooks.get("state_message") if isinstance(hooks.get("state_message"), str) else "",
+        "klippy_message": _safe_text(hooks.get("state_message")),
         "file_position": as_number(virtual.get("file_position")),
         "progress": as_number(virtual.get("progress")),
         "total_duration": as_number(stats.get("total_duration")),

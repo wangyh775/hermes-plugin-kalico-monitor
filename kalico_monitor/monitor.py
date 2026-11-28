@@ -82,6 +82,10 @@ class Monitor:
         self.disconnect_method: str | None = None
         self.subscription_active = False
         self.clock_id = uuid.uuid4().hex
+        self.live_socket = None
+        self.last_transport_seen = None
+        self.probe_pending = None
+        self.transport_lost = False
         self.field_seen: dict[tuple[str, str], float] = {}
         for prefix in ("klippy", "moonraker"):
             incident = store.get_meta(f"{prefix}_open_incident", {})
@@ -95,6 +99,7 @@ class Monitor:
         self.ws_offline_since = time.monotonic()
         self._invalidate_subscription("starting")
         self.store.set_meta("transport_connected", False)
+        self.store.update_storage_health()
 
     def _invalidate_subscription(self, state="subscribing"):
         self.subscription_active = False
@@ -254,6 +259,7 @@ class Monitor:
                         continue
                 if not url:
                     self.store.route_failed(item["id"], route, "Webhook route is not configured")
+                    self.store.set_meta(f"webhook_health_{route}", {"state": "unconfigured", "at": time.time()})
                     LOG.warning("notification %s route is not configured: %s", route, item["id"])
                     continue
                 try:
@@ -265,14 +271,19 @@ class Monitor:
                                   message_fields=self.settings.message_fields, **options)
                 except PermanentPayloadError as exc:
                     self.store.route_dead(item['id'], route, str(exc))
+                    self.store.set_meta(f'webhook_health_{route}', {'state': 'invalid_payload', 'at': time.time()})
                     LOG.error('notification quarantined: %s %s', item['id'], route)
                 except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
                     self.store.route_failed(item["id"], route,
                                             type(exc).__name__ + ": " + str(exc)[:100])
+                    self.store.set_meta(f'webhook_health_{route}', {
+                        'state': 'retrying', 'at': time.time(), 'error': type(exc).__name__,
+                        'http_status': getattr(exc, 'status', None)})
                     LOG.warning("notification retry scheduled: kind=%s id=%s route=%s cause=%s",
                             item["kind"], item["id"], route, type(exc).__name__)
                 else:
                     self.store.route_delivered(item["id"], route)
+                    self.store.set_meta(f"webhook_health_{route}", {"state": "acknowledged", "at": time.time()})
                     LOG.info("notification accepted: kind=%s id=%s route=%s",
                          item["kind"], item["id"], route)
             await asyncio.sleep(0.2)
@@ -301,10 +312,10 @@ class Monitor:
         hooks = snapshot.get("webhooks", {})
         if isinstance(hooks, dict) and hooks.get("state") == "ready":
             self._klippy_recovered(source_method)
-        elif isinstance(hooks, dict) and hooks.get("state") in {"disconnected", "startup"}:
+        elif isinstance(hooks, dict) and hooks.get("state") in ("disconnected", "startup"):
             self._klippy_disconnected()
             self._invalidate_subscription()
-        elif isinstance(hooks, dict) and hooks.get("state") in {"shutdown", "error"}:
+        elif isinstance(hooks, dict) and hooks.get("state") in ("shutdown", "error"):
             self.klippy_down_since = None
             self.shutdown_query_since = None
             self._invalidate_subscription("klippy_shutdown")
@@ -454,6 +465,10 @@ class Monitor:
         async with session.ws_connect(self.settings.ws_url, headers=headers,
                                       heartbeat=20) as ws:
             self.clock_id = uuid.uuid4().hex
+            self.live_socket = ws
+            self.last_transport_seen = time.monotonic()
+            self.probe_pending = None
+            self.transport_lost = False
             LOG.info("Moonraker connected; subscribing to status")
             self.store.set_meta("transport_connected", True)
             self._heartbeat()
@@ -472,6 +487,8 @@ class Monitor:
             query_pending = None
             self.shutdown_query_since = None
             while True:
+                if self.transport_lost:
+                    raise ConnectionError("Moonraker liveness probe failed")
                 if not pending and self.shutdown_query_since is None and time.monotonic() - last_refresh >= 30:
                     # Rediscover optional objects after fallback, not just on reconnect.
                     if not self.subscription_active or self.store.get_meta("capability_state", {}).get("missing"):
@@ -503,7 +520,12 @@ class Monitor:
                 if not isinstance(packet, dict):
                     continue
                 packet_received_at = time.time()
+                self.last_transport_seen = time.monotonic()
+                self.probe_pending = None
                 reply_id = packet.get("id")
+                if isinstance(reply_id, str) and reply_id.startswith("monitor-probe-"):
+                    self._tick(processor)
+                    continue
                 if pending and reply_id == request_id:
                     # A subscription reply is the complete initial snapshot.
                     if "error" in packet:
@@ -558,14 +580,14 @@ class Monitor:
                         cause = ("notify_klippy_shutdown" if self.shutdown_query_since is not None
                                  else self.disconnect_method)
                         hooks_state = snapshot["webhooks"].get("state")
-                        if hooks_state in {"shutdown", "error"}:
+                        if hooks_state in ("shutdown", "error"):
                             self._finish_shutdown(processor, update["webhooks"], cause)
                             self.shutdown_query_since = None
                             self.klippy_down_since = None
                         elif hooks_state == "ready":
                             # Recovery requires a fresh full subscription, not a partial query.
                             self._finish_shutdown(processor)
-                        elif hooks_state in {"disconnected", "startup"}:
+                        elif hooks_state in ("disconnected", "startup"):
                             self._klippy_disconnected()
                     continue
 
@@ -621,10 +643,10 @@ class Monitor:
                         hooks = processor.status.get("webhooks", {})
                         if hooks.get("state") == "ready":
                             self._klippy_recovered(method)
-                        elif hooks.get("state") in {"disconnected", "startup"}:
+                        elif hooks.get("state") in ("disconnected", "startup"):
                             self._klippy_disconnected(method)
                             self._invalidate_subscription()
-                        elif hooks.get("state") in {"shutdown", "error"}:
+                        elif hooks.get("state") in ("shutdown", "error"):
                             self._invalidate_subscription("klippy_shutdown")
                 self._tick(processor)
 
@@ -637,6 +659,8 @@ class Monitor:
             except (aiohttp.ClientError, OSError, TimeoutError,
                     ConnectionError, RuntimeError) as exc:
                 self.shutdown_query_since = None
+                self.live_socket = None
+                self.probe_pending = None
                 self._invalidate_subscription("disconnected")
                 self.store.set_meta("transport_connected", False)
                 LOG.warning("Moonraker WebSocket problem: %s", type(exc).__name__)
@@ -651,11 +675,39 @@ class Monitor:
                 self._heartbeat()
             await asyncio.sleep(3)
 
+    async def _probe_transport(self):
+        """Application-level liveness test, separate from subscription success."""
+        ws = self.live_socket
+        seen = self.last_transport_seen
+        if ws is None or seen is None or self.transport_lost:
+            return
+        elapsed = time.monotonic() - seen
+        if self.probe_pending and elapsed >= self.settings.disconnect_seconds:
+            self.transport_lost = True
+            self.ws_offline_since = seen
+            self._invalidate_subscription("disconnected")
+            self.store.set_meta("transport_connected", False)
+            # Reader checks transport_lost on every iteration, even if close stalls.
+            try:
+                await asyncio.wait_for(ws.close(), timeout=2)
+            except (aiohttp.ClientError, OSError, asyncio.TimeoutError):
+                pass
+        elif not self.probe_pending and elapsed >= min(5, self.settings.disconnect_seconds / 2):
+            self.probe_pending = "monitor-probe-" + uuid.uuid4().hex
+            try:
+                await asyncio.wait_for(ws.send_json({"jsonrpc": "2.0", "method": "server.info",
+                                                   "id": self.probe_pending}), timeout=2)
+            except (aiohttp.ClientError, OSError, asyncio.TimeoutError):
+                # Let the deadline branch classify this transport as lost.
+                pass
+
     async def _communication_watchdog(self):
         last_maintenance = time.monotonic()
         while True:
-            if time.monotonic() - last_maintenance >= 3600:
-                self.store.archive_info(time.time() - 7 * 86400)
+            await self._probe_transport()
+            if time.monotonic() - last_maintenance >= 60:
+                self.store.archive_info(time.time() - 7 * 86400, limit=1000)
+                self.store.update_storage_health()
                 last_maintenance = time.monotonic()
             if (self.ws_offline_since is not None and not self.ws_offline_notified
                     and time.monotonic() - self.ws_offline_since >= self.settings.disconnect_seconds):

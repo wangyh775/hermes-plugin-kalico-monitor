@@ -1,8 +1,13 @@
 """Fault injection and deterministic SQLite stress cases."""
+import asyncio
 import json
 import time
 from dataclasses import replace
+from types import SimpleNamespace
 
+import pytest
+
+from kalico_monitor import monitor as monitor_module
 from kalico_monitor.config import Settings
 from kalico_monitor.events import Alert, EventProcessor
 from kalico_monitor.filament_events import FilamentEventTracker
@@ -111,5 +116,69 @@ def test_database_pressure_and_compaction(tmp_path):
         assert db.conn.execute("SELECT COUNT(*) FROM alerts").fetchone()[0] == 5001
         assert db.conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert db.pending_routes(route="direct")[0]["id"] == critical
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_persisted_before_failed_query_send(tmp_path):
+    cfg = config(tmp_path)
+    db = Outbox(cfg.sqlite_path, cfg.printer)
+
+    class Socket:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def send_json(self, packet):
+            if packet["method"] == "printer.objects.query":
+                raise ConnectionError("query send failed")
+
+        async def receive(self, **kwargs):
+            import aiohttp
+            return SimpleNamespace(type=aiohttp.WSMsgType.TEXT,
+                                   data=json.dumps({"method": "notify_klippy_shutdown"}))
+
+    try:
+        monitor = Monitor(cfg, db)
+        with pytest.raises(ConnectionError, match="query send failed"):
+            await monitor._listen(SimpleNamespace(ws_connect=lambda *a, **kw: Socket()))
+        assert db.get_meta("shutdown_open_incident")["id"] == 1
+        assert db.unrouted()[0]["kind"] == "klippy_shutdown"
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_half_open_transport_watchdog(tmp_path, monkeypatch):
+    cfg = config(tmp_path)
+    db = Outbox(cfg.sqlite_path, cfg.printer)
+    clock = [10.0]
+    monkeypatch.setattr(monitor_module, "time",
+                        SimpleNamespace(monotonic=lambda: clock[0], time=time.time))
+    sent = []
+    closed = asyncio.Event()
+
+    async def send(packet):
+        sent.append(packet)
+
+    async def close():
+        closed.set()
+
+    try:
+        monitor = Monitor(cfg, db)
+        monitor.live_socket = SimpleNamespace(send_json=send, close=close)
+        monitor.last_transport_seen = 10
+        monitor.ws_offline_since = None
+        clock[0] = 13
+        await monitor._probe_transport()
+        assert sent[0]["method"] == "server.info"
+        clock[0] = 16
+        await monitor._probe_transport()
+        assert monitor.transport_lost
+        assert monitor.ws_offline_since == 10
+        assert closed.is_set()
     finally:
         db.close()
