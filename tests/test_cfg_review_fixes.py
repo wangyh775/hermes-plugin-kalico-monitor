@@ -3,7 +3,9 @@ import pytest
 
 from kalico_monitor import bootstrap, setup
 from kalico_monitor.diagnostics import count_inherited_feishu_targets
+from kalico_monitor.config import Settings
 from kalico_monitor.events import Alert
+from kalico_monitor.monitor import Monitor
 from kalico_monitor.monitor_cfg import read_cfg, save_cfg
 from kalico_monitor.policy import parse_modes, routes_for
 from kalico_monitor.quick import format_alerts, read_monitor
@@ -191,3 +193,21 @@ def test_standalone_wizard_clears_chat_id_in_both_files(tmp_path):
     assert wizard(env, ask=lambda _="": next(answers), out=lambda _: None)
     assert read_env(env)["KALICO_DIRECT_CHAT_ID"] == ""
     assert read_cfg(tmp_path / "monitor.cfg")["KALICO_DIRECT_CHAT_ID"] == ""
+
+
+def test_monitor_startup_reconciles_old_agent_retries(tmp_path):
+    store = Outbox(tmp_path / "alerts.sqlite3", "PEEK-01")
+    try:
+        key = store.enqueue(Alert("paused", 1, "file.gcode", "paused", "info"))
+        store.ensure_routes(key, ("direct", "agent"))
+        settings = Settings(
+            printer="PEEK-01", moonraker_url="http://localhost:7125",
+            moonraker_api_key="", hermes_url="http://localhost:8644/webhooks/kalico-alert",
+            hermes_secret="secret", sqlite_path=tmp_path / "alerts.sqlite3",
+            disconnect_seconds=25, stall_minutes=0, event_modes="paused=off",
+        )
+        _monitor = Monitor(settings, store)
+        assert store.summary()["suppressed"] == 1
+        assert store.pending_routes() == []
+    finally:
+        store.close()
