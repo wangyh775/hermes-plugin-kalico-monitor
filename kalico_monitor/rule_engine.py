@@ -9,7 +9,7 @@ import math
 import time
 from typing import Any
 
-from .custom_config import EventRule
+from .custom_config import EventRule, Reliability
 from .events import Alert
 from .storage import Outbox
 
@@ -39,9 +39,10 @@ def matched(value: float, condition: str, threshold: float) -> bool:
 
 
 class RuleEngine:
-    def __init__(self, store: Outbox, rules: tuple[EventRule, ...]):
+    def __init__(self, store: Outbox, rules: tuple[EventRule, ...], reliability: Reliability | None = None):
         self.store = store
         self.rules = rules
+        self.reliability = reliability or Reliability()
         previous = store.get_meta(META_KEY, {})
         self.tracker = previous if isinstance(previous, dict) else {}
         self.suspend()
@@ -79,7 +80,7 @@ class RuleEngine:
                          "signature":list(signature), "since":None,
                          "fired":False, "last":None}
             fresh = field_seen is None or 0 <= now - field_seen.get(
-                (rule.object, rule.field.split(".")[0]), float("-inf")) <= 120
+                (rule.object, rule.field.split(".")[0]), float("-inf")) <= self.reliability.field_max_age
             value = numeric_field(status, rule.object, rule.field) if connected and fresh else None
             active = value is not None and matched(value, rule.condition, rule.threshold)
             observed = now if field_seen is None else field_seen.get((rule.object, rule.field.split(".")[0]))
@@ -95,14 +96,18 @@ class RuleEngine:
                 last_observation = state.get("last_observation")
                 if (not isinstance(since, (int, float)) or since > now
                         or (observed is not None and last_observation is not None
-                            and observed - last_observation > 35)):
+                            and observed - last_observation > self.reliability.observation_gap)):
                     state["since"] = observed if observed is not None else now
                 state["last_observation"] = observed
                 last = state.get("last")
                 cooldown_ok = (not isinstance(last, (int, float))
                                or now - last >= rule.cooldown)
                 if field_seen is not None and isinstance(state.get("last_wall"), (int, float)):
-                    cooldown_ok = cooldown_ok and time.time() - state["last_wall"] >= rule.cooldown
+                    elapsed_wall = time.time() - state["last_wall"]
+                    if elapsed_wall < 0:
+                        state["last_wall"] = time.time()
+                        elapsed_wall = 0
+                    cooldown_ok = cooldown_ok and elapsed_wall >= rule.cooldown
                 if (not state.get("fired")
                         and observed is not None and observed - state["since"] >= rule.duration
                         and cooldown_ok):

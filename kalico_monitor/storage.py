@@ -6,10 +6,21 @@ import json
 import shutil
 import sqlite3
 import time
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .event_registry import metadata, utc_timestamp
 from .events import Alert
+
+
+def safe_text(value, limit=240):
+    return str(value).encode("utf-8", "replace").decode("utf-8")[:limit]
+
+
+@dataclass(frozen=True)
+class WriteResult:
+    id: str
+    status: str
 
 
 class Outbox:
@@ -17,7 +28,7 @@ class Outbox:
         self.path = Path(path).expanduser()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.printer = printer
-        self.conn = sqlite3.connect(str(self.path), timeout=10)
+        self.conn = sqlite3.connect(str(self.path), timeout=0.25)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("""CREATE TABLE IF NOT EXISTS metadata (
@@ -63,7 +74,42 @@ class Outbox:
         if "incident_key" not in {row[1] for row in self.conn.execute("PRAGMA table_info(alerts)")}:
             self.conn.execute("ALTER TABLE alerts ADD COLUMN incident_key TEXT")
         self.conn.execute("CREATE INDEX IF NOT EXISTS alerts_incident ON alerts(incident_key,created)")
+        self._migrate_incidents()
         self.conn.commit()
+
+    def _migrate_incidents(self):
+        if self.get_meta("incident_migration_v1", False):
+            return
+        kinds = {"moonraker_unreachable": "moonraker", "moonraker_recovered": "moonraker",
+                 "klippy_disconnected": "klippy", "klippy_recovered": "klippy",
+                 "klippy_shutdown": "klippy_shutdown", "klippy_shutdown_recovered": "klippy_shutdown"}
+        for row in self.conn.execute("SELECT id,kind,payload,origin FROM alerts WHERE incident_key IS NULL "
+                                     "AND kind IN (?,?,?,?,?,?)", tuple(kinds)):
+            prefix = kinds.get(row["kind"])
+            if prefix is None:
+                continue
+            try:
+                payload = json.loads(row["payload"] or "{}")
+                origin = json.loads(row["origin"] or "{}")
+                generation = payload.get("incident_id")
+                if generation is None and prefix == "klippy_shutdown":
+                    generation = origin.get("generation")
+            except (ValueError, TypeError, AttributeError):
+                continue
+            if type(generation) is int and generation > 0:
+                self.conn.execute("UPDATE alerts SET incident_key=? WHERE id=?",
+                                  (f"{prefix}:{generation}", row["id"]))
+        # Recover a previously committed Ready state with a still-open shutdown
+        # incident left by the non-atomic v2 recovery path.
+        state = self.get_state() or {}
+        opened = self.get_meta("shutdown_open_incident", {})
+        if state.get("klippy_state") == "ready" and opened.get("id"):
+            generation = opened["id"]
+            self._insert(Alert("klippy_shutdown_recovered", generation, "", "Klippy ready (recovered during migration)",
+                               "info", payload={"incident_id": generation,
+                               "incident_key": f"klippy_shutdown:{generation}"}, trigger="migration"))
+            self._set_meta("shutdown_open_incident", {})
+        self._set_meta("incident_migration_v1", True)
 
     def close(self):
         self.conn.close()
@@ -84,7 +130,7 @@ class Outbox:
         with self.conn:
             self._set_meta(key, value)
 
-    def transition(self, state: dict, alerts: list[Alert], incident=None) -> None:
+    def transition(self, state: dict, alerts: list[Alert], incident=None, closed=()) -> None:
         """Atomic: pending alerts cannot disappear because state advanced first."""
         with self.conn:
             for alert in alerts:
@@ -92,6 +138,8 @@ class Outbox:
             self._set_meta("watch_state", state)
             if incident is not None:
                 self._set_meta("shutdown_open_incident", incident)
+            for key in closed:
+                self._set_meta(key, {})
 
     def report_checkpoint(self, key: str, tracker: dict, alert: Alert | None = None) -> None:
         """Queue a periodic report and its next deadline in one transaction."""
@@ -108,14 +156,16 @@ class Outbox:
             (id,kind,route,reason,created,data) VALUES (?,?,?,?,?,?)""",
             (key, str(kind).encode("utf-8", "replace").decode()[:100], route,
              str(reason).encode("utf-8", "replace").decode()[:300], time.time(),
-             json.dumps(data, ensure_ascii=True, default=str)[:4096]))
+             json.dumps({"preview": safe_text(data, 3000)}, ensure_ascii=True)))
 
     def quarantine(self, key, kind, reason, data):
         with self.conn:
             self._quarantine(key, kind, "ingest", reason, data)
 
-    def _insert(self, alert: Alert) -> str:
-        digest = self.alert_id(alert)
+    def _insert(self, alert: Alert, *, fallback=True, stable_id=None) -> WriteResult:
+        digest = stable_id or self.alert_id(alert)
+        if self.conn.execute('SELECT 1 FROM alerts WHERE id=?', (digest,)).fetchone():
+            return WriteResult(digest, 'duplicate')
         try:
             from .event_registry import validate_payload
             validate_payload(alert.kind, alert.payload, alert.severity)
@@ -137,14 +187,35 @@ class Outbox:
         except (ValueError, TypeError, UnicodeError, OverflowError, RecursionError) as exc:
             self._quarantine(digest, alert.kind, "ingest", type(exc).__name__,
                              {"detail": alert.detail})
-            return digest
+            if fallback and alert.severity == "critical":
+                # Retain the stable identity and safe incident linkage, discard
+                # optional data that would prevent notification.
+                original = alert.payload if isinstance(alert.payload, dict) else {}
+                minimal = {"payload_degraded": True}
+                for key in ("incident_id", "incident_key"):
+                    value = original.get(key)
+                    if type(value) is int or isinstance(value, str):
+                        minimal[key] = safe_text(value) if isinstance(value, str) else value
+                from .event_registry import NATIVE
+                if alert.kind in NATIVE:
+                    minimal["params"] = []
+                result = self._insert(replace(alert, detail="Critical event detected; diagnostic payload quarantined",
+                    filename=safe_text(alert.filename, 180), payload=minimal,
+                    source_eventtime=None, source_clock_id=None,
+                    source_method=None, trigger="payload_degraded", received_at=time.time(), generated_at=time.time(),
+                    source_id=safe_text(alert.source_id) if alert.source_id is not None else None),
+                    fallback=False, stable_id=digest)
+                if result.status != "quarantined":
+                    return WriteResult(result.id, "degraded")
+                raise ValueError("critical event cannot be persisted") from exc
+            return WriteResult(digest, "quarantined")
         incident = (alert.payload or {}).get("incident_key")
         self.conn.execute("""INSERT OR IGNORE INTO alerts
             (id,kind,severity,filename,detail,created,next_retry,payload,origin,incident_key)
             VALUES (?,?,?,?,?,?,?,?,?,?)""", (digest, alert.kind, alert.severity,
                             alert.filename, alert.detail, time.time(), time.time(),
                             payload, origin, incident if isinstance(incident, str) else None))
-        return digest
+        return WriteResult(digest, 'inserted')
 
     def enrich_alert(self, alert_id: str, detail: str) -> None:
         detail = detail.encode("utf-8", "replace").decode("utf-8")[:1500]
@@ -159,8 +230,11 @@ class Outbox:
             self._quarantine(f"{alert_id}:{route}", "delivery", route, reason, {"alert_id": alert_id})
             self.conn.execute("""UPDATE alert_routes SET suppressed=?,last_error=?
                 WHERE alert_id=? AND route=? AND delivered IS NULL AND suppressed IS NULL""",
-                (time.time(), "permanent failure: " + reason[:180], alert_id, route))
+                (time.time(), "permanent failure: " + safe_text(reason, 180), alert_id, route))
             self._finalize_routes(alert_id)
+
+    def has_alert(self, alert: Alert) -> bool:
+        return self.conn.execute("SELECT 1 FROM alerts WHERE id=?", (self.alert_id(alert),)).fetchone() is not None
 
     def journal_checkpoint(self, cursor: dict, alert: Alert, gap: Alert | None = None) -> bool:
         with self.conn:
@@ -181,6 +255,10 @@ class Outbox:
             return not existed and self.conn.execute('SELECT 1 FROM alerts WHERE id=?', (digest,)).fetchone() is not None
 
     def enqueue(self, alert: Alert) -> str:
+        with self.conn:
+            return self._insert(alert).id
+
+    def enqueue_result(self, alert: Alert) -> WriteResult:
         with self.conn:
             return self._insert(alert)
 
@@ -207,7 +285,8 @@ class Outbox:
                 (time.time(), alert_id))
         else:
             self.conn.execute("""UPDATE alerts
-                SET suppressed=?, last_error='suppressed by event policy'
+                SET suppressed=?, last_error=CASE WHEN EXISTS (SELECT 1 FROM dead_letters d
+                    WHERE d.id LIKE alerts.id || ':%') THEN 'permanent failure' ELSE 'suppressed by event policy' END
                 WHERE id=? AND delivered IS NULL AND suppressed IS NULL""",
                 (time.time(), alert_id))
 
@@ -311,7 +390,7 @@ class Outbox:
         with self.conn:
             self.conn.execute("""UPDATE alert_routes SET attempts=?,next_retry=?,last_error=?
                 WHERE alert_id=? AND route=? AND suppressed IS NULL AND delivered IS NULL""",
-                              (attempts, time.time() + delay, error[:240], alert_id, route))
+                              (attempts, time.time() + delay, safe_text(error), alert_id, route))
 
     def pending(self, now: float | None = None, limit: int = 20) -> list[dict]:
         now = time.time() if now is None else now
@@ -333,7 +412,7 @@ class Outbox:
         delay = min(300, 2 ** min(attempts, 8))
         with self.conn:
             self.conn.execute("""UPDATE alerts SET attempts=?,next_retry=?,last_error=?
-                WHERE id=?""", (attempts, time.time() + delay, error[:240], alert_id))
+                WHERE id=?""", (attempts, time.time() + delay, safe_text(error), alert_id))
 
     def update_storage_health(self) -> dict:
         size = sum(p.stat().st_size for p in (self.path, Path(str(self.path) + "-wal")) if p.exists())

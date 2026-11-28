@@ -161,8 +161,8 @@ def test_disconnected_requires_threshold_and_recovers(tmp_path):
         monitor._tick(processor)
         monitor._tick(processor)
         assert [a["kind"] for a in db.pending()] == ["klippy_disconnected"]
-        monitor._klippy_recovered()
-        monitor._klippy_recovered()
+        monitor._process_snapshot(processor, snapshot())
+        monitor._process_snapshot(processor, snapshot())
         assert [a["kind"] for a in db.pending()] == [
             "klippy_disconnected", "klippy_recovered",
         ]

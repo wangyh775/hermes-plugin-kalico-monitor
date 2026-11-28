@@ -99,7 +99,7 @@ class EventProcessor:
             return
         lowered = message.lower()
         if any(x in lowered for x in ("error", "failed", "shutdown", "bad probe")):
-            self.recent_errors.append(message.strip()[:300])
+            self.recent_errors.append(message.encode('utf-8', 'replace').decode().strip()[:300])
 
     def handle_packet(self, packet: dict, now: float, *, allow_stall=True) -> tuple[dict | None, list[Alert]]:
         """Parse notifications. Shutdown event itself is followed by a full query.

@@ -29,7 +29,7 @@ LABELS = {
     "queue_state": "队列状态", "name": "名称", "job_filename": "任务文件",
     "incident_id": "故障关联 ID", "source_event_id": "源事件 ID", "generation": "任务代次",
     "sequence": "事件序号", "incident_key": "故障关联键",
-    "source_eventtime": "源单调时钟", "source_clock_id": "源时钟域", "generated_at": "生成时间",
+    "payload_degraded": "载荷降级", "source_eventtime": "源单调时钟", "source_clock_id": "源时钟域", "generated_at": "生成时间",
 }
 
 

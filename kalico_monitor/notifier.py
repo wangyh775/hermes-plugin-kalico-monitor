@@ -34,6 +34,10 @@ def make_request(alert: dict, secret: str, printer: str, timestamp: int | None =
                    received_at=payload.get('received_at'), source_occurred_at=None)
     if alert.get("payload"):
         payload["event"] = json.loads(alert["payload"])
+        if not isinstance(payload["event"], dict):
+            raise ValueError("event payload must be an object")
+        if payload["event"].get("payload_degraded") is True:
+            payload["payload_degraded"] = True
     if route == "direct":
         options = message_fields or {}
         selected = options.get(alert["kind"], options.get("default", DEFAULT_MESSAGE_FIELDS))
@@ -74,6 +78,5 @@ async def deliver(session: aiohttp.ClientSession, url: str, secret: str,
     accepted = {"accepted", "duplicate"} if route == "agent" else {"delivered", "duplicate"}
     if (not isinstance(result, dict) or not isinstance(result.get("status"), str)
             or result["status"] not in accepted):
-        status = result.get("status") if isinstance(result, dict) else type(result).__name__
-        raise ValueError(f"Webhook did not confirm delivery: {status}")
+        raise ValueError("Webhook did not confirm delivery")
     return result
