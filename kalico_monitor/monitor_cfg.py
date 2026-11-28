@@ -27,7 +27,9 @@ LIFECYCLE_EVENTS = (
     "started", "paused", "resumed", "complete", "cancelled", "error",
     "stalled", "print_progress", "klippy_shutdown", "klippy_disconnected",
     "klippy_recovered", "moonraker_unreachable", "moonraker_recovered",
-    "nozzle_force_anomaly",
+    "nozzle_force_anomaly", "filament_jam_detected", "filament_runout_detected",
+    "filament_diagnosis_result", "filament_jam_confirmed", "filament_z_adjusted",
+    "filament_recovery_started", "filament_recovery_verified", "filament_recovery_failed",
 )
 _VALID_KIND = re.compile(r"^[A-Za-z0-9_]+$")
 
