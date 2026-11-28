@@ -429,8 +429,21 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(2 if warnings else 0)
     if args.check:
         values = validate_all(read_env(path))
-        if any(v in {"agent", "both"} for v in parse_modes(values["KALICO_EVENT_MODES"]).values()) and not values["HERMES_AGENT_WEBHOOK_URL"]:
-            parser.error("agent/both requires Hermes Agent Webhook")
+        from .custom_config import load_extensions, load_handlers
+        from .handlers import agent_url
+        from .monitor_cfg import cfg_path
+        _, rules = load_extensions(cfg_path(path))
+        handlers = load_handlers(cfg_path(path))
+        modes = parse_modes(values["KALICO_EVENT_MODES"])
+        for rule in rules:
+            modes.setdefault(rule.name, rule.mode)
+        if any(v in {"agent", "both"} for v in modes.values()) and not values["HERMES_AGENT_WEBHOOK_URL"]:
+            parser.error("agent/both requires Hermes Agent Webhook; run config --apply")
+        for handler in handlers.handlers.values():
+            try:
+                agent_url(values["HERMES_AGENT_WEBHOOK_URL"], handler)
+            except ValueError as exc:
+                parser.error(str(exc))
         print("配置校验通过")
         return
     if args.show:

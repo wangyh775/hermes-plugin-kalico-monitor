@@ -16,6 +16,7 @@ from .config import Settings
 from .events import Alert, EventProcessor
 from .filament_events import OBJECT as FILAMENT_OBJECT
 from .filament_events import FilamentEventTracker
+from .handlers import agent_url
 from .native_events import NativeEventAdapter
 from .notifier import deliver
 from .policy import parse_modes, routes_for
@@ -128,14 +129,24 @@ class Monitor:
             for item in self.store.pending_routes(limit=12):
                 route = item["route"]
                 url = self.settings.hermes_agent_url if route == "agent" else self.settings.hermes_url
+                if route == "agent":
+                    handler = self.settings.handler_config.for_event(item["kind"])
+                    try:
+                        url = agent_url(url, handler)
+                    except ValueError:
+                        self.store.route_failed(item["id"], route, "invalid Handler base URL")
+                        continue
                 if not url:
                     self.store.route_failed(item["id"], route, "Webhook route is not configured")
                     LOG.warning("notification %s route is not configured: %s", route, item["id"])
                     continue
                 try:
+                    options = {}
+                    if self.settings.handler_config.templates:
+                        options["message_templates"] = self.settings.handler_config.templates
                     await deliver(session, url, self.settings.hermes_secret,
                                   self.settings.printer, item, route=route,
-                                  message_fields=self.settings.message_fields)
+                                  message_fields=self.settings.message_fields, **options)
                 except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
                     self.store.route_failed(item["id"], route,
                                             type(exc).__name__ + ": " + str(exc)[:100])
@@ -405,7 +416,7 @@ def main():
         from .setup import main as config_main
         config_main(sys.argv[2:])
         return
-    if len(sys.argv) > 1 and sys.argv[1] in {"events", "discover", "test"}:
+    if len(sys.argv) > 1 and sys.argv[1] in {"events", "discover", "test", "handlers"}:
         from .event_cli import main as event_main
         event_main(sys.argv[1:])
         return

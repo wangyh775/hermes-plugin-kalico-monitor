@@ -5,8 +5,9 @@ import argparse
 import json
 import urllib.request
 
-from .custom_config import load_extensions
+from .custom_config import load_extensions, load_handlers
 from .event_registry import NATIVE, REGISTRY, SOURCE_TYPES, definition
+from .handlers import agent_url
 from .monitor_cfg import cfg_path
 from .policy import mode_for, parse_modes
 from .setup import default_path, read_env
@@ -14,7 +15,7 @@ from .setup import default_path, read_env
 
 def main(argv: list[str]) -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("events", "discover", "test"))
+    parser.add_argument("command", choices=("events", "discover", "test", "handlers"))
     parser.add_argument("kind", nargs="?")
     parser.add_argument("--source", choices=SOURCE_TYPES)
     parser.add_argument("--native", action="store_true")
@@ -23,7 +24,26 @@ def main(argv: list[str]) -> None:
     parser.add_argument("--file", type=type(default_path()), default=default_path())
     args = parser.parse_args(argv)
     values = read_env(args.file.expanduser())
-    message_fields, custom_rules = load_extensions(cfg_path(args.file.expanduser()))
+    path = cfg_path(args.file.expanduser())
+    message_fields, custom_rules = load_extensions(path)
+    handlers = load_handlers(path)
+    if args.command == "handlers":
+        if args.watch or args.native or args.source:
+            parser.error("invalid handler filter")
+        if args.info:
+            handler = handlers.handlers.get(args.info)
+            if not handler:
+                parser.error("unknown handler")
+            print(json.dumps({"name": handler.name, "skills": handler.skills,
+                              "route": handler.route, "prompt": handler.prompt},
+                             ensure_ascii=False, indent=2))
+        else:
+            for handler in handlers.handlers.values():
+                bound = [kind for kind, name in handlers.bindings.items() if name == handler.name]
+                print(f"{handler.name:24} {handler.route}  {','.join(bound) or 'unbound'}")
+            if not handlers.handlers:
+                print("未定义 Handler；Agent 使用默认分析路由")
+        return
     if (args.source or args.native or args.info) and (args.command != "events" or args.watch):
         parser.error("event filters require events without --watch")
     if args.command == "test":
@@ -54,11 +74,13 @@ def main(argv: list[str]) -> None:
             async with aiohttp.ClientSession(trust_env=False) as session:
                 for route in routes:
                     url = values["HERMES_AGENT_WEBHOOK_URL" if route == "agent" else "HERMES_WEBHOOK_URL"]
+                    if route == "agent":
+                        url = agent_url(url, handlers.for_event(args.kind))
                     if not url:
                         raise ValueError(f"Missing {route} webhook")
                     result = await deliver(session, url, values["HERMES_WEBHOOK_SECRET"],
                                            values["KALICO_PRINTER_NAME"], alert, route,
-                                           message_fields=message_fields)
+                                           message_fields=message_fields, message_templates=handlers.templates)
                     print(route, result.get("status"))
         asyncio.run(send())
         return
@@ -95,7 +117,9 @@ def main(argv: list[str]) -> None:
             entry = entries.get(args.info)
             if not entry:
                 parser.error("unknown event")
-            print(json.dumps({**vars(entry), "mode": mode_for(entry.kind, modes)},
+            handler = handlers.for_event(entry.kind)
+            print(json.dumps({**vars(entry), "mode": mode_for(entry.kind, modes),
+                              "handler": handler.name if handler else None},
                              ensure_ascii=False, indent=2))
             return
         for source in SOURCE_TYPES:

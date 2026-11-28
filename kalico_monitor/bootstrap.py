@@ -20,6 +20,8 @@ from pathlib import Path
 
 from ruamel.yaml import YAML
 
+from .custom_config import load_extensions, load_handlers
+from .handlers import sync_routes
 from .notifier import make_request
 from .policy import parse_modes
 from .setup import LABELS, PLACEHOLDERS, masked, read_env, save_env, validate_all, validate_field
@@ -386,11 +388,18 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
                     route.pop("deliver_extra", None)
         extra = route.get("deliver_extra") or {}
         previous[key] = str(extra.get("chat_id", ""))
+    from .monitor_cfg import cfg_path, save_cfg
+    monitor_cfg = cfg_path(env_path)
+    handlers = load_handlers(monitor_cfg)
+    _, rules = load_extensions(monitor_cfg)
+    sync_routes(config["platforms"]["webhook"]["extra"]["routes"], handlers, raw)
     after_stream = io.StringIO()
     yaml_editor().dump(config, after_stream)
     hermes_changed = before_hermes != after_stream.getvalue()
     previous["HERMES_WEBHOOK_URL"] = f"http://127.0.0.1:{port}/webhooks/kalico-alert"
     active_modes = parse_modes(previous["KALICO_EVENT_MODES"])
+    for rule in rules:
+        active_modes.setdefault(rule.name, rule.mode)
     agent_required = any(v in {"agent", "both"} for v in active_modes.values())
     previous["HERMES_AGENT_WEBHOOK_URL"] = (
         f"http://127.0.0.1:{port}/webhooks/kalico-analysis" if agent_required else ""
@@ -405,8 +414,6 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
     unit_changed = manage_service and (
         not unit.is_file() or unit.read_text(encoding="utf-8") != target_unit
     )
-    from .monitor_cfg import cfg_path, save_cfg
-    monitor_cfg = cfg_path(env_path)
     targets = ([config_path] if hermes_changed else []) + [env_path, monitor_cfg] + (
         [unit] if unit_changed else [])
     for target in targets:
