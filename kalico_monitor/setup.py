@@ -351,11 +351,27 @@ def wizard(path: Path, ask=input, secret_ask=getpass.getpass, out=print) -> bool
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Kalico Monitor 本地交互配置")
     parser.add_argument("--file", type=Path, default=default_path())
+    parser.add_argument("--apply", action="store_true", help="同步 Hermes 并重启 Monitor")
     parser.add_argument("--check", action="store_true", help="校验有效配置")
     parser.add_argument("--show", action="store_true", help="仅显示脱敏摘要")
     parser.add_argument("--test", action="store_true", help="仅测试 Moonraker HTTP")
     args = parser.parse_args(argv)
     path = args.file.expanduser()
+    if args.apply:
+        if not sys.stdin.isatty():
+            parser.error("--apply requires interactive confirmation")
+        values = validate_all(read_env(path))
+        if input("同步 Hermes 路由并重启服务？[y/N]：").strip().lower() not in {"y", "yes"}:
+            return
+        from .bootstrap import configure
+        home = Path(os.getenv("HERMES_HOME", "~/.hermes")).expanduser()
+        warnings: list[str] = []
+        configure(Path(__file__).resolve().parents[1], home, values["MOONRAKER_URL"],
+                  values["KALICO_PRINTER_NAME"], "direct", "", path.resolve(), home / "config.yaml",
+                  overrides=values, install_plugin=False, verification_warnings=warnings)
+        for warning in warnings:
+            print(warning)
+        raise SystemExit(2 if warnings else 0)
     if args.check:
         values = validate_all(read_env(path))
         if any(v in {"agent", "both"} for v in parse_modes(values["KALICO_EVENT_MODES"]).values()) and not values["HERMES_AGENT_WEBHOOK_URL"]:
