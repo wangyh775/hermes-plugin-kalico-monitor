@@ -49,6 +49,9 @@ class Monitor:
         self.settings = settings
         self.event_modes = parse_modes(settings.event_modes)
         self.store = store
+        cancelled = store.reconcile_policy(self.event_modes)
+        if cancelled:
+            LOG.warning("suppressed %s pending routes by updated event policy", cancelled)
         self.last_store_at = 0.0
         self.last_heartbeat_at = float("-inf")
         self.last_status_received_at: float | None = None

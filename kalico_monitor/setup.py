@@ -34,6 +34,7 @@ GROUPS = {
     "4": ("监控与通知", KEYS[7:11]),
     "8": ("LLM 分析与事件策略", KEYS[11:13]),
     "9": ("状态命令显示字段", KEYS[13:15]),
+    "10": ("飞书投递目标", KEYS[15:]),
 }
 LABELS = {
     "KALICO_DIRECT_CHAT_ID": "直推飞书会话 ID",
@@ -221,6 +222,55 @@ def save_env(path: Path, values: dict[str, str]) -> None:
             os.unlink(temp)
 
 
+def save_local_config(path: Path, values: dict[str, str]) -> None:
+    """Safely write the ENV and CFG pair, rolling both back on errors.
+
+    Values are prevalidated and prior file bytes captured before any change.
+    This is failure-atomic for ordinary exceptions; a power cut between two
+    replacements still requires recovery from the retained backups.
+    """
+    from .monitor_cfg import cfg_path, render_cfg, save_cfg
+
+    values = validate_all(values)
+    cfg = cfg_path(path)
+    if path == cfg:
+        raise ValueError("monitor.env 和 monitor.cfg 不能是同一文件")
+    render_cfg(values)  # Validate the second file before modifying either.
+    targets = (cfg, path)
+    for target in targets:
+        if target.is_symlink():
+            raise ValueError(f"拒绝覆盖符号链接形式的配置文件：{target}")
+    snapshots = {target: target.read_bytes() if target.exists() else None
+                 for target in targets}
+    touched: list[Path] = []
+    try:
+        save_cfg(cfg, values)
+        touched.append(cfg)
+        # Mark the env before writing: a monkeypatched/partial failure must
+        # restore its bytes as well as the already-written cfg file.
+        touched.append(path)
+        save_env(path, values)
+    except Exception:
+        for target in reversed(touched):
+            original = snapshots[target]
+            if original is None:
+                target.unlink(missing_ok=True)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            fd, temp = tempfile.mkstemp(prefix=".monitor-restore-", dir=target.parent)
+            try:
+                os.fchmod(fd, 0o600)
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(original)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temp, target)
+            finally:
+                if os.path.exists(temp):
+                    os.unlink(temp)
+        raise
+
+
 def masked(key: str, value: str) -> str:
     if key in SECRET_KEYS:
         return "********（已设置）" if value and value not in PLACEHOLDERS else "（未设置）"
@@ -299,6 +349,7 @@ def wizard(path: Path, ask=input, secret_ask=getpass.getpass, out=print) -> bool
         out("\n[1] Moonraker    [2] Hermes Webhook")
         out("[3] 数据与授权    [4] 监控与通知")
         out("[8] LLM 分析与事件策略  [9] /kalico status 显示字段")
+        out("[10] 飞书通知目标（空值继承 Hermes 默认群）")
         out("[5] 查看摘要      [6] 测试 Moonraker")
         out("[7] 保存退出      [0] 放弃修改")
         choice = ask("请选择：").strip()
@@ -328,10 +379,12 @@ def wizard(path: Path, ask=input, secret_ask=getpass.getpass, out=print) -> bool
             if any(mode == "agent" or mode == "both" for kind, mode in parse_modes(values["KALICO_EVENT_MODES"]).items()) and not values["HERMES_AGENT_WEBHOOK_URL"]:
                 out("启用 agent/both 时必须配置 Hermes Agent Webhook 地址。")
                 continue
-            from .monitor_cfg import cfg_path, save_cfg
-            save_env(path, values)
-            save_cfg(cfg_path(path), values)
-            out(f"已保存：{path}（权限 0600）")
+            try:
+                save_local_config(path, values)
+            except (OSError, ValueError) as exc:
+                out(f"保存失败，配置已尝试回滚：{type(exc).__name__}: {exc}")
+                continue
+            out(f"已保存：{path} 和对应 monitor.cfg（权限 0600）")
             if generated_secret and values["HERMES_WEBHOOK_SECRET"] == generated_secret:
                 out("请将以下新 Secret 同步到 Hermes Webhook 路由（仅显示本次）：")
                 out(generated_secret)

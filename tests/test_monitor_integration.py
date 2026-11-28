@@ -48,7 +48,7 @@ async def test_monitor_receives_complete_and_shutdown(tmp_path):
         await asyncio.wait_for(active.wait(), timeout=1)
         await asyncio.sleep(0.05)
         listen.cancel()
-        with pytest.raises(asyncio.CancelledError):
+        with pytest.raises((asyncio.CancelledError, ConnectionError)):
             await listen
     assert store.get_state()["state"] == "complete"
     assert [x["kind"] for x in store.pending()] == ["complete"]

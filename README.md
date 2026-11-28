@@ -7,11 +7,11 @@
 **Status:** Experimental. The plugin manifest currently says v0.3.0 while Python packaging still says 0.2.0; no real printer-to-Hermes-to-Feishu end-to-end validation has been completed. This is not a safety system.
 
 
-## PR #19: CFG and event management (development preview)
+## Monitor CFG and event management
 
-The draft branch introduces a standalone `monitor.cfg` alongside `monitor.env`. It is not Klipper's printer.cfg. Explicit CFG business settings override legacy ENV values; the installer still mirrors some fields for compatibility. API keys and webhook secrets remain in ENV. See the [CFG reference and example](docs/CONFIGURATION.zh-CN.md#pr-19cfg-配置与事件管理开发预览).
+PR #19 introduced a standalone `monitor.cfg` alongside `monitor.env`. It is not Klipper's printer.cfg. Explicit CFG business settings override legacy ENV values; the installer still mirrors some fields for compatibility. API keys and webhook secrets remain in ENV. See the [CFG reference and example](docs/CONFIGURATION.zh-CN.md#pr-19cfg-配置与事件管理开发预览).
 
-The installer adds menu 14 (per-event routing), 15 (direct Feishu chat ID), and 16 (Agent Feishu chat ID). Routes support off/direct/agent/both. Existing assigned deliveries are retained. Inbound chat authorization is separate from outbound targets.
+The installer adds menu 14 (per-event routing), 15 (direct Feishu chat ID), and 16 (Agent Feishu chat ID). Routes support off/direct/agent/both. After applying PR #20 and restarting the Monitor, pending routes disallowed by the current event policy are suppressed instead of retried; already delivered routes stay in the history. Inbound chat authorization is separate from outbound targets. Use `-` in menu 15/16 to clear a Feishu target and inherit Hermes's default chat.
 
 ```bash
 .venv/bin/kalico-monitor config --check
@@ -24,7 +24,7 @@ The installer adds menu 14 (per-event routing), 15 (direct Feishu chat ID), and 
 
 Apply requests confirmation, synchronizes Hermes routes and restarts the service. Watch observes raw Moonraker notifications; discover lists status objects, not arbitrary Kalico internal events. Test sends a real, explicitly synthetic notification according to policy, potentially invoking an LLM, without changing printer state or the production queue. Agent acceptance is not final delivery.
 
-These features are draft-only, pending CI, rollback and live integration validation. Do not deploy the draft to a production printer.
+PR #20 adds regression coverage for policy suppression, SQLite migration, and paired config rollback. End-to-end Feishu delivery and real-printer integration still require separate verification; keep the deployment experimental.
 
 
 ## Architecture
