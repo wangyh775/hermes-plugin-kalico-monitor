@@ -165,7 +165,7 @@ def read_monitor(path: Path, limit: int = 5) -> dict:
         health = {r["key"]: json.loads(r["value"]) for r in conn.execute(
             "SELECT key,value FROM metadata WHERE key IN "
             "('subscription_health','transport_connected','native_oversize_count',"
-            "'dispatcher_heartbeat_direct','dispatcher_heartbeat_agent','webhook_health_direct',
+            "'dispatcher_heartbeat_direct','dispatcher_heartbeat_agent','webhook_health_direct',"
             "'webhook_health_agent','storage_health')")}
         # A running old daemon may not have migrated the schema yet.
         has_suppressed = any(row[1] == "suppressed" for row in
