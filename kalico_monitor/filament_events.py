@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
+import time
 from typing import Any
 
 from .events import Alert
 from .storage import Outbox
 
+LOG = logging.getLogger("kalico-monitor")
 OBJECT = "filament_force"
 EVENTS = {
     "jam_detected": ("疑似堵头，等待二次诊断", "warning"),
@@ -17,7 +20,8 @@ EVENTS = {
     "z_adjusted": ("首层 Z 补偿", "info"),
     "recovery_started": ("自动恢复并验证", "info"),
     "recovery_verified": ("受力验证通过", "info"),
-    "recovery_failed": ("自动恢复失败", "warning"),
+    "recovery_failed": ("恢复或保护流程失败", "warning"),
+    "sensor_fault": ("称重传感器或受力基准异常", "critical"),
 }
 
 
@@ -32,7 +36,7 @@ def finite(value: Any) -> float | None:
 
 
 def valid_event(event: Any) -> bool:
-    if not isinstance(event, dict) or event.get("schema") != 1:
+    if not isinstance(event, dict) or type(event.get("schema")) is not int or event["schema"] != 1:
         return False
     boot, seq = event.get("boot_id"), event.get("seq")
     if (not isinstance(boot, str) or len(boot) != 32
@@ -43,7 +47,7 @@ def valid_event(event: Any) -> bool:
         or event["kind"] not in EVENTS):
         return False
     window = event.get("window")
-    if event["kind"] in ("jam_detected", "runout_detected"):
+    if event["kind"] in ("jam_detected", "runout_detected", "sensor_fault") or window is not None:
         if not isinstance(window, dict):
             return False
         samples = window.get("samples")
@@ -54,7 +58,7 @@ def valid_event(event: Any) -> bool:
             return False
     try:
         return len(json.dumps(event, allow_nan=False)) <= 256_000
-    except (ValueError, TypeError, OverflowError):
+    except (ValueError, TypeError, OverflowError, RecursionError):
         return False
 
 
@@ -67,6 +71,8 @@ def detail(event: dict) -> str:
         ("diagnostic_speed_mm_s", "诊断 E 速度", " mm/s"),
         ("result", "诊断结果", ""), ("reason", "失败原因", ""),
         ("step_mm", "单次 Z 补偿", " mm"), ("total_mm", "累计 Z 补偿", " mm"),
+        ("sensor", "传感器", ""), ("sensor_last_sample_age_s", "采样数据年龄", " s"),
+        ("previous_state", "前一恢复状态", ""),
     ):
         value = event.get(key)
         if isinstance(value, str) or finite(value) is not None:
@@ -82,16 +88,37 @@ def detail(event: dict) -> str:
 class FilamentEventTracker:
     def __init__(self, store: Outbox):
         self.store = store
+        self._last_snapshot: list | None = None
+        self._last_invalid_log = float("-inf")
+        self.invalid_observations = 0
 
     def observe(self, status: dict, state: dict) -> int:
         obj = status.get(OBJECT)
         events = obj.get("events") if isinstance(obj, dict) else None
         if not isinstance(events, list):
             return 0
+        # _tick can revisit the very same merged status list. Do not
+        # recount invalid rows or continuously query SQLite for that list.
+        if events is self._last_snapshot:
+            return 0
         count = 0
+        accepted = []
+        invalid = 0
         for event in events[-16:]:
-            if not valid_event(event):
-                continue
+            if valid_event(event):
+                accepted.append(event)
+            else:
+                invalid += 1
+        if invalid:
+            self.invalid_observations += invalid
+            now = time.monotonic()
+            if now - self._last_invalid_log >= 60:
+                LOG.warning("ignored malformed/unsupported filament journal entries: %s (observations=%s)",
+                            invalid, self.invalid_observations)
+                self._last_invalid_log = now
+        # A journal snapshot is ordered by producer sequence; tolerate
+        # out-of-order rows within one snapshot without false gap alerts.
+        for event in sorted(accepted, key=lambda e: (e["boot_id"], e["seq"])):
             kind = event["kind"]
             filename = event.get("filename") or state.get("filename", "")
             filename = filename[:180] if isinstance(filename, str) else ""
@@ -102,5 +129,6 @@ class FilamentEventTracker:
                           filename=filename, detail=detail(event),
                           severity=EVENTS[kind][1], source_id=event["event_id"],
                           payload=event)
-            count += int(self.store.enqueue_source(alert))
+            count += int(self.store.ingest_filament_event(alert, event['boot_id'], event['seq']))
+        self._last_snapshot = events
         return count

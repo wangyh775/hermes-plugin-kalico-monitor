@@ -18,17 +18,52 @@ DESCRIPTIONS = {
     "klippy_recovered": "Klippy 恢复", "moonraker_unreachable": "Moonraker 断开",
     "moonraker_recovered": "Moonraker 恢复", "nozzle_force_anomaly": "喷嘴力异常",
     **{"filament_" + name: value[0] for name, value in FILAMENT_EVENTS.items()},
+    "filament_event_gap": "受力事件流缺失",
+    "status_data_stale": "打印机状态数据失效", "status_data_recovered": "打印机状态数据恢复",
 }
 
 
 def main(argv: list[str]) -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("events", "discover", "test"))
+    parser.add_argument("command", choices=("events", "discover", "test", "dead-letters"))
     parser.add_argument("kind", nargs="?")
+    parser.add_argument("--retry", metavar="ALERT_ID", help="explicitly replay one dead-letter route")
+    parser.add_argument("--route", choices=("direct", "agent"))
     parser.add_argument("--watch", action="store_true", help="observe Moonraker notifications")
     parser.add_argument("--file", type=type(default_path()), default=default_path())
     args = parser.parse_args(argv)
     values = read_env(args.file.expanduser())
+    if args.command == "dead-letters":
+        from pathlib import Path
+
+        from .policy import routes_for
+        from .storage import Outbox
+
+        if args.retry and not args.route:
+            parser.error("--retry requires --route")
+        path = Path(values["KALICO_MONITOR_DB"]).expanduser()
+        if not path.is_file():
+            parser.error("Monitor database does not exist")
+        store = Outbox(path, values["KALICO_PRINTER_NAME"])
+        try:
+            if args.retry:
+                item = store.conn.execute("""SELECT a.kind FROM alert_routes r JOIN alerts a
+                    ON a.id=r.alert_id WHERE r.alert_id=? AND r.route=? AND r.failed_at IS NOT NULL""",
+                    (args.retry, args.route)).fetchone()
+                if item is None:
+                    parser.error("Dead-letter route not found")
+                if args.route not in routes_for(item["kind"], parse_modes(values["KALICO_EVENT_MODES"])):
+                    parser.error("Route disabled by current event policy")
+                if not store.retry_dead_letter(args.retry, args.route):
+                    parser.error("Dead-letter route changed")
+                print("Route requeued with original request ID; delivery not yet confirmed.")
+            else:
+                print(json.dumps(store.dead_letters(), ensure_ascii=False, indent=2))
+        finally:
+            store.close()
+        return
+    if args.retry or args.route:
+        parser.error("--retry and --route are only valid for dead-letters")
     if args.command == "test":
         if args.kind not in LIFECYCLE_EVENTS:
             parser.error("test requires a registered event name")

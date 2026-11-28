@@ -30,6 +30,7 @@ LIFECYCLE_EVENTS = (
     "nozzle_force_anomaly", "filament_jam_detected", "filament_runout_detected",
     "filament_diagnosis_result", "filament_jam_confirmed", "filament_z_adjusted",
     "filament_recovery_started", "filament_recovery_verified", "filament_recovery_failed",
+    "filament_sensor_fault", "filament_event_gap", "status_data_stale", "status_data_recovered",
 )
 _VALID_KIND = re.compile(r"^[A-Za-z0-9_]+$")
 

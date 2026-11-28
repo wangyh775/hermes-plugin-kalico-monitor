@@ -165,16 +165,23 @@ def read_monitor(path: Path, limit: int = 5) -> dict:
         # A running old daemon may not have migrated the schema yet.
         has_suppressed = any(row[1] == "suppressed" for row in
                              conn.execute("PRAGMA table_info(alerts)"))
+        has_failed = any(row[1] == "failed_at" for row in conn.execute("PRAGMA table_info(alerts)"))
         active = "delivered IS NULL AND suppressed IS NULL" if has_suppressed else "delivered IS NULL"
+        if has_failed:
+            active += " AND failed_at IS NULL"
+        failed = conn.execute("SELECT COUNT(*) FROM alerts WHERE failed_at IS NOT NULL").fetchone()[0] if has_failed else 0
+        health_row = conn.execute("SELECT value FROM metadata WHERE key='communication_health'").fetchone()
+        communication = json.loads(health_row["value"]) if health_row else {}
         count = conn.execute(f"SELECT COUNT(*) FROM alerts WHERE {active}").fetchone()[0]
         select_suppressed = "suppressed" if has_suppressed else "NULL AS suppressed"
+        select_failed = "failed_at" if has_failed else "NULL AS failed_at"
         rows = conn.execute(
             "SELECT kind,severity,filename,detail,created,delivered, "
-            f"{select_suppressed} FROM alerts WHERE kind != 'print_progress' "
+            f"{select_suppressed}, {select_failed} FROM alerts WHERE kind != 'print_progress' "
             "ORDER BY created DESC LIMIT ?", (min(max(limit, 1), 10),)
         ).fetchall()
     return {"exists": True, "pending": count, "recent": [dict(r) for r in rows],
-            "heartbeat": heartbeat}
+            "heartbeat": heartbeat, "failed": failed, "communication": communication}
 
 
 def format_alerts(data: dict, printer: str = "Kalico") -> str:
@@ -183,7 +190,8 @@ def format_alerts(data: dict, printer: str = "Kalico") -> str:
     lines = [f"🔔 {printer} · 最近告警（待发送 {data['pending']} 条）"]
     for item in data["recent"]:
         date = time.strftime("%m-%d %H:%M", time.localtime(item["created"]))
-        delivery = ("已过滤" if item.get("suppressed") is not None
+        delivery = ("永久失败" if item.get("failed_at") is not None
+                    else "已过滤" if item.get("suppressed") is not None
                     else "待发送" if item["delivered"] is None else "已投递")
         lines.append(f"{date} [{_text(item['severity'], 12)}] "
                      f"{_text(item['kind'], 28)} · {delivery}\n"
@@ -206,6 +214,8 @@ def format_health(data: dict, printer: str = "Kalico", now: float | None = None)
         state = "心跳过期（监听服务可能中断）"
     return (f"🩺 {printer} · Monitor 状态\n"
             f"{state}\n待发送告警：{data['pending']} 条\n"
+            f"永久失败告警：{data.get('failed', 0)} 条\n"
+            f"通信健康：{data.get('communication', {}).get('state', 'unknown')}\n"
             "注：心跳反映监控进程，不代表飞书通知已验证送达。")
 
 
