@@ -7,6 +7,7 @@ from typing import Any
 
 from .custom_config import DEFAULT_MESSAGE_FIELDS
 from .event_registry import row_metadata
+from .handlers import PLACEHOLDER
 
 LABELS = {
     "printer": "设备", "kind": "事件", "severity": "等级", "occurred_at": "时间",
@@ -37,7 +38,8 @@ def payload_dict(alert: dict) -> dict[str, Any]:
 
 
 def render_direct_message(alert: dict, printer: str,
-                          fields: tuple[str, ...] = DEFAULT_MESSAGE_FIELDS) -> str:
+                          fields: tuple[str, ...] = DEFAULT_MESSAGE_FIELDS,
+                          template: str | None = None) -> str:
     event = payload_dict(alert)
     if isinstance(event.get("event"), dict):
         event = event["event"]
@@ -59,12 +61,13 @@ def render_direct_message(alert: dict, printer: str,
         )}
     values = {**event, **basic, **row_metadata(alert)}
     # Hermes DIRECT_PROMPT owns the static heading; avoid two titles.
-    lines = []
-    for field in fields:
+    def scalar(field):
         value = values.get(field)
-        if value is None or value == "":
-            value = "—"
-        elif not isinstance(value, (str, int, float, bool)):
-            value = "—"
-        lines.append(f"{LABELS[field]}：{value}")
+        if value is None or value == "" or not isinstance(value, (str, int, float, bool)):
+            return "—"
+        return str(value)
+
+    if template is not None:
+        return PLACEHOLDER.sub(lambda match: scalar(match.group(1)), template)[:12000]
+    lines = [f"{LABELS[field]}：{scalar(field)}" for field in fields]
     return "\n".join(lines)

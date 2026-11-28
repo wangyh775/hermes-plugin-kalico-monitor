@@ -81,9 +81,15 @@ def load_extensions(path: Path) -> tuple[dict[str, tuple[str, ...]], tuple[Event
             if not NAME.fullmatch(name):
                 raise ValueError(f"消息模板名称无效：{section}")
             options = dict(parser.items(section))
-            if set(options) != {"fields"}:
-                raise ValueError(f"{section} 仅支持 fields")
-            messages[name] = parse_field_list(options["fields"])
+            if set(options) not in ({"fields"}, {"template"}):
+                raise ValueError(f"{section} 必须且只能设置 fields 或 template")
+            if "fields" in options:
+                messages[name] = parse_field_list(options["fields"])
+            else:
+                # An event-specific template overrides default fields.
+                messages[name] = DEFAULT_MESSAGE_FIELDS
+        elif section == "handlers" or section.startswith("handler "):
+            continue
         elif section.startswith("event "):
             name = section[6:]
             if not NAME.fullmatch(name) or name == "default":
@@ -124,7 +130,15 @@ def load_extensions(path: Path) -> tuple[dict[str, tuple[str, ...]], tuple[Event
                 raise ValueError("自定义事件最多 32 个")
         else:
             raise ValueError(f"不支持的 monitor.cfg 配置节：{section}")
+    from .handlers import parse_handlers
+    parse_handlers(parser, rules, MESSAGE_FIELDS)
     return messages, tuple(rules)
+
+
+def load_handlers(path: Path):
+    from .handlers import parse_handlers
+    _, rules = load_extensions(path)
+    return parse_handlers(_parser(path), rules, MESSAGE_FIELDS)
 
 
 def preserved_extension_text(path: Path) -> str:
@@ -137,5 +151,6 @@ def preserved_extension_text(path: Path) -> str:
             continue
         lines.extend(["", f"[{section}]"])
         for key, value in parser.items(section):
-            lines.append(f"{key}: {value}")
+            # ConfigParser returns multiline values without indentation.
+            lines.append(f"{key}: " + value.replace("\n", "\n    "))
     return "\n".join(lines) + "\n" if lines else ""

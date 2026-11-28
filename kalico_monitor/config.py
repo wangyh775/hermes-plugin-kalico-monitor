@@ -6,7 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
-from .custom_config import EventRule, load_extensions
+from .custom_config import EventRule, load_extensions, load_handlers
+from .handlers import HandlerConfig
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,7 @@ class Settings:
     event_modes: str = ""
     message_fields: dict[str, tuple[str, ...]] = field(default_factory=dict)
     event_rules: tuple[EventRule, ...] = ()
+    handler_config: HandlerConfig = field(default_factory=HandlerConfig)
 
     @classmethod
     def load(cls) -> "Settings":
@@ -33,6 +35,7 @@ class Settings:
         path = cfg_path(env_path)
         overrides = read_cfg(path)
         message_fields, event_rules = load_extensions(path)
+        handler_config = load_handlers(path)
 
         def get(key: str, default: str = "") -> str:
             return overrides.get(key, os.getenv(key, default))
@@ -77,7 +80,8 @@ class Settings:
                    stall_minutes=max(0, int(get("KALICO_STALL_MINUTES", "0"))),
                    progress_report_minutes=report_minutes, watch_nozzle_force=watch_force,
                    hermes_agent_url=agent_url, event_modes=modes,
-                    message_fields=message_fields, event_rules=event_rules)
+                    message_fields=message_fields, event_rules=event_rules,
+                    handler_config=handler_config)
 
     @property
     def ws_url(self) -> str:
