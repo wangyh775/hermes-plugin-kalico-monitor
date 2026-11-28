@@ -16,10 +16,10 @@ from .config import Settings
 from .events import Alert, EventProcessor
 from .filament_events import OBJECT as FILAMENT_OBJECT
 from .filament_events import FilamentEventTracker
-from .rule_engine import RuleEngine
 from .notifier import deliver
 from .policy import parse_modes, routes_for
 from .reports import PeriodicReporter
+from .rule_engine import RuleEngine
 from .storage import Outbox
 
 LOG = logging.getLogger("kalico-monitor")

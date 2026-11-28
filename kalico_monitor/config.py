@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from .custom_config import EventRule, load_extensions
 from pathlib import Path
 from urllib.parse import urlparse
+
+from .custom_config import EventRule, load_extensions
 
 
 @dataclass(frozen=True)

@@ -56,7 +56,8 @@ def render_direct_message(alert: dict, printer: str,
             f"{window.get('sample_count', '—')} 原始点"
         )}
     values = {**event, **basic}
-    lines = ["【Kalico Monitor 告警】"]
+    # Hermes DIRECT_PROMPT owns the static heading; avoid two titles.
+    lines = []
     for field in fields:
         value = values.get(field)
         if value is None or value == "":

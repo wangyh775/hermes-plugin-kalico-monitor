@@ -165,7 +165,7 @@ def test_reconfigure_preserves_other_event_modes():
     assert changes is not None
     modes = bootstrap.parse_modes(changes["KALICO_EVENT_MODES"])
     assert modes["klippy_shutdown"] == "both"
-    assert modes["nozzle_force_anomaly"] == "both"
+    assert modes["filament_jam_confirmed"] == "both"
     assert modes["complete"] == "direct"
     assert modes["paused"] == "agent"
     assert current["KALICO_EVENT_MODES"] == (
@@ -250,7 +250,7 @@ def test_reconfigure_only_moonraker_does_not_restart_hermes(tmp_path, monkeypatc
     env = tmp_path / "monitor.env"
     values = defaults()
     values["HERMES_WEBHOOK_SECRET"] = "s" * 64
-    values["KALICO_EVENT_MODES"] = "klippy_shutdown=both,nozzle_force_anomaly=both"
+    values["KALICO_EVENT_MODES"] = "klippy_shutdown=both,filament_jam_confirmed=both"
     save_env(env, values)
     monkeypatch.setattr(bootstrap.platform, "system", lambda: "Linux")
     monkeypatch.setattr(bootstrap.shutil, "which", lambda _name: "/usr/bin/mock")

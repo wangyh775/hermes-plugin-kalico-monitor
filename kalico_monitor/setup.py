@@ -229,8 +229,8 @@ def save_local_config(path: Path, values: dict[str, str]) -> None:
     This is failure-atomic for ordinary exceptions; a power cut between two
     replacements still requires recovery from the retained backups.
     """
-    from .monitor_cfg import cfg_path, render_cfg, save_cfg
     from .custom_config import preserved_extension_text
+    from .monitor_cfg import cfg_path, render_cfg, save_cfg
 
     values = validate_all(values)
     cfg = cfg_path(path)
