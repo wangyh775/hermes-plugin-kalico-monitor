@@ -101,3 +101,7 @@ Tests are simulated; real Moonraker, Hermes Gateway and Feishu integration must 
 ## Upgrade notes
 
 PR #7 (configuration wizard) and PR #8 (per-event Hermes routing) have been merged into `main`. Existing installs can update with `git pull`, reinstall using `.venv/bin/python -m pip install -e .`, then run `.venv/bin/kalico-monitor config` and restart the user service. The default remains zero-LLM direct delivery. GitHub CI passed on Python 3.10 and 3.12 with Ruff; real Gateway/Feishu end-to-end validation is still required. A `status=accepted` response acknowledges Agent task admission, not final analysis completion or Feishu delivery.
+
+### filament_force event bridge
+
+Enable KALICO_WATCH_NOZZLE_FORCE=1 to subscribe to the legacy nozzle_force_monitor and new filament_force.events journal. JAM, runout, diagnosis, confirmed resistance, Z adjustment and recovery events have independent routing. SQLite deduplicates source event IDs and retains the structured payload, forwarded in the signed Hermes webhook as event. Force traces are bounded peak-preserving samples, not full-rate ADC recordings. See [event protocol](https://github.com/wangyh775/klipper-filament-force/blob/feature/diagnostic-recovery-fsm/docs/events.md).

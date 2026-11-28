@@ -145,3 +145,7 @@ KALICO_EVENT_MODES=klippy_shutdown=both,nozzle_force_anomaly=both
 原 PR #7（交互配置向导）与 PR #8（Hermes 权限及双路事件路由）均已合并。既有部署升级时运行 `git pull`，再执行 `.venv/bin/python -m pip install -e .` 和 `.venv/bin/kalico-monitor config` 检查新增字段。配置保存后重启 Monitor；如 Hermes 配置有变更，还需按 Hermes 部署方式重载 Gateway。默认所有事件均为 `direct`，不会因升级自动调用 LLM。
 
 事件模式说明、幂等机制、旧 SQLite 兼容和风险边界见 [事件路由](docs/EVENT_ROUTING.zh-CN.md)。GitHub CI 已覆盖 Python 3.10、3.12 与 Ruff；**尚未完成真实飞书和 Hermes 端到端验收**。
+
+### filament_force 事件接入
+
+启用 KALICO_WATCH_NOZZLE_FORCE=1 后兼容旧 nozzle_force_monitor 和新 filament_force.events。支持堵头、断料、诊断结果、确认高阻力、Z 补偿和恢复状态事件。每条事件携带唯一 ID，Monitor 保存 SQLite payload 并在 Hermes 签名 Webhook 的 event 字段转发受力窗口等结构化数据。详见 [事件文档](docs/EVENTS.zh-CN.md)。
