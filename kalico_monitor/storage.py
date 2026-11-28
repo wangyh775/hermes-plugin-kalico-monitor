@@ -15,7 +15,7 @@ class Outbox:
         self.path = Path(path).expanduser()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.printer = printer
-        self.conn = sqlite3.connect(str(self.path), timeout=10)
+        self.conn = sqlite3.connect(str(self.path), timeout=10, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("""CREATE TABLE IF NOT EXISTS metadata (
@@ -319,5 +319,5 @@ class Outbox:
                 "delivered": counts["delivered"] or 0,
                 "suppressed": counts["suppressed"] or 0,
                 "failed": counts["failed"] or 0,
-                "dead_routes": len(self.dead_letters(limit=1000000)),
+                "dead_routes": self.conn.execute("SELECT COUNT(*) FROM alert_routes WHERE failed_at IS NOT NULL").fetchone()[0],
                 "recent": [dict(r) for r in rows]}

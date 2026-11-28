@@ -9,6 +9,8 @@ import asyncio
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 import aiohttp
 
@@ -49,6 +51,7 @@ class Monitor:
         self.settings = settings
         self.event_modes = parse_modes(settings.event_modes)
         self.store = store
+        self._db_executor: ThreadPoolExecutor | None = None
         cancelled = store.reconcile_policy(self.event_modes)
         if cancelled:
             LOG.warning("suppressed %s pending routes by updated event policy", cancelled)
@@ -66,6 +69,17 @@ class Monitor:
         self.ws_offline_notified = False
         self.ws_offline_id = 0
         self.shutdown_query_since: float | None = None
+        self.communication_state = "unknown"
+        self._communication_fault_id: int | None = None
+        self._communication_failures = 0
+
+    async def _db_call(self, func, *args, **kwargs):
+        # Production run owns one serial DB thread. Standalone unit callers
+        # may use the synchronous path; never share a live connection with it.
+        if self._db_executor is None:
+            return func(*args, **kwargs)
+        return await asyncio.get_running_loop().run_in_executor(
+            self._db_executor, partial(func, *args, **kwargs))
 
     def _save(self, current: dict, alerts: list[Alert]):
         previous = self.last_stored_state
@@ -129,9 +143,9 @@ class Monitor:
 
     async def _route_pending(self):
         while True:
-            for item in self.store.unrouted(limit=30):
+            for item in await self._db_call(self.store.unrouted, limit=30):
                 routes = routes_for(item["kind"], self.event_modes)
-                self.store.ensure_routes(item["id"], routes)
+                await self._db_call(self.store.ensure_routes, item["id"], routes)
                 if not routes:
                     LOG.info("notification suppressed: kind=%s id=%s", item["kind"], item["id"])
             await asyncio.sleep(0.25)
@@ -141,13 +155,13 @@ class Monitor:
         while True:
             # Re-select after every request so a newly queued critical event
             # does not wait behind a previously selected batch of info events.
-            items = self.store.pending_routes(limit=1, route=route)
+            items = await self._db_call(self.store.pending_routes, limit=1, route=route)
             if not items:
                 await asyncio.sleep(0.25)
                 continue
             item = items[0]
             if not url:
-                self.store.route_dead_letter(item["id"], route, "Webhook route is not configured")
+                await self._db_call(self.store.route_dead_letter, item["id"], route, "Webhook route is not configured")
                 LOG.warning("notification %s route is not configured: %s", route, item["id"])
                 await asyncio.sleep(0)
                 continue
@@ -155,15 +169,15 @@ class Monitor:
                 await deliver(session, url, self.settings.hermes_secret,
                               self.settings.printer, item, route=route)
             except PermanentDeliveryError as exc:
-                self.store.route_dead_letter(item["id"], route, str(exc)[:240])
+                await self._db_call(self.store.route_dead_letter, item["id"], route, str(exc)[:240])
                 LOG.error("notification dead-lettered: kind=%s id=%s route=%s",
                           item["kind"], item["id"], route)
             except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
-                self.store.route_failed(item["id"], route, type(exc).__name__ + ": " + str(exc)[:100])
+                await self._db_call(self.store.route_failed, item["id"], route, type(exc).__name__ + ": " + str(exc)[:100])
                 LOG.warning("notification retry scheduled: kind=%s id=%s route=%s cause=%s",
                             item["kind"], item["id"], route, type(exc).__name__)
             else:
-                self.store.route_delivered(item["id"], route)
+                await self._db_call(self.store.route_delivered, item["id"], route)
                 LOG.info("notification %s: kind=%s id=%s route=%s",
                          "accepted" if route == "agent" else "delivered",
                          item["kind"], item["id"], route)
@@ -221,7 +235,8 @@ class Monitor:
             current, alerts = processor.evaluate(time.time())
             self._record(processor, current, alerts)
             connected = (
-                self.klippy_down_since is None
+                self.communication_state not in ("degraded", "stale")
+                and self.klippy_down_since is None
                 and self.shutdown_query_since is None
                 and self.last_status_received_at is not None
                 and time.monotonic() - self.last_status_received_at <= 120
@@ -237,7 +252,7 @@ class Monitor:
 
     async def _listen(self, session: aiohttp.ClientSession):
         headers = {"X-Api-Key": self.settings.moonraker_api_key} if self.settings.moonraker_api_key else {}
-        processor = EventProcessor(previous=self.store.get_state(),
+        processor = EventProcessor(previous=await self._db_call(self.store.get_state),
                                    stall_minutes=self.settings.stall_minutes)
         async with session.ws_connect(self.settings.ws_url, headers=headers,
                                       heartbeat=20) as ws:
@@ -252,13 +267,13 @@ class Monitor:
                 try:
                     msg = await ws.receive(timeout=5)
                 except asyncio.TimeoutError:
-                    self._tick(processor)
+                    await self._db_call(self._tick, processor)
                     continue
                 if msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR,
                                 aiohttp.WSMsgType.CLOSE):
                     raise ConnectionError("Moonraker WebSocket closed")
                 if msg.type != aiohttp.WSMsgType.TEXT:
-                    self._tick(processor)
+                    await self._db_call(self._tick, processor)
                     continue
                 try:
                     packet = json.loads(msg.data)
@@ -284,7 +299,7 @@ class Monitor:
                     snapshot = result.get("status") if isinstance(result, dict) else None
                     if not isinstance(snapshot, dict):
                         raise RuntimeError("Moonraker subscription returned no status")
-                    self._process_snapshot(processor, snapshot)
+                    await self._db_call(self._process_snapshot, processor, snapshot)
                     continue
                 if reply_id == 2:
                     # A Klippy failure may reject object queries while Moonraker
@@ -300,14 +315,14 @@ class Monitor:
                             current, alerts = processor.apply_update(update, time.time())
                         else:
                             current, alerts = processor.set_snapshot(update, time.time())
-                        self._record(processor, current, alerts)
+                        await self._db_call(self._record, processor, current, alerts)
                         hooks_state = snapshot["webhooks"].get("state")
                         if hooks_state in {"shutdown", "error"}:
                             self.shutdown_query_since = None
                             self.klippy_down_since = None
                         elif hooks_state == "ready":
                             self.shutdown_query_since = None
-                            self._klippy_recovered()
+                            await self._db_call(self._klippy_recovered)
                         elif hooks_state in {"disconnected", "startup"}:
                             self._klippy_disconnected()
                     continue
@@ -323,7 +338,7 @@ class Monitor:
                     await ws.send_json(QUERY)
                 elif method == "notify_klippy_ready":
                     self.last_status_received_at = None
-                    self._klippy_recovered()
+                    await self._db_call(self._klippy_recovered)
                     include_force = self.settings.watch_nozzle_force
                     force_variant = 0
                     requested_at = time.monotonic()
@@ -333,13 +348,13 @@ class Monitor:
                     if current is not None:
                         if method == "notify_status_update":
                             self.last_status_received_at = time.monotonic()
-                        self._record(processor, current, alerts)
+                        await self._db_call(self._record, processor, current, alerts)
                         hooks = processor.status.get("webhooks", {})
                         if hooks.get("state") == "ready":
-                            self._klippy_recovered()
+                            await self._db_call(self._klippy_recovered)
                         elif hooks.get("state") in {"disconnected", "startup"}:
                             self._klippy_disconnected()
-                self._tick(processor)
+                await self._db_call(self._tick, processor)
 
     async def _listen_forever(self, session: aiohttp.ClientSession):
         while True:
@@ -349,25 +364,79 @@ class Monitor:
                 raise
             except (aiohttp.ClientError, OSError, TimeoutError,
                     ConnectionError, RuntimeError) as exc:
-                self.reporter.suspend()
+                await self._db_call(self.reporter.suspend)
                 self.last_status_received_at = None
                 LOG.warning("Moonraker WebSocket problem: %s", type(exc).__name__)
                 if self.ws_offline_since is None:
                     self.ws_offline_since = time.monotonic()
                 if (not self.ws_offline_notified and
                         time.monotonic() - self.ws_offline_since >= self.settings.disconnect_seconds):
-                    self.ws_offline_id = self._new_incident("moonraker_incidents")
-                    self._system_alert("moonraker_unreachable", self.ws_offline_id,
+                    self.ws_offline_id = await self._db_call(self._new_incident, "moonraker_incidents")
+                    await self._db_call(self._system_alert, "moonraker_unreachable", self.ws_offline_id,
                                        "Moonraker WebSocket is unavailable")
                     self.ws_offline_notified = True
                 await asyncio.sleep(3)
             else:
                 await asyncio.sleep(3)
 
+    def _communication_observation(self, valid: bool, reason: str) -> None:
+        if valid:
+            self._communication_failures = 0
+            if self._communication_fault_id is not None:
+                self._system_alert("status_data_recovered", self._communication_fault_id,
+                                   "Moonraker/Kalico status query valid again", "info")
+                self._communication_fault_id = None
+            self.communication_state = "healthy"
+        else:
+            self._communication_failures += 1
+            self.communication_state = "degraded"
+            if self._communication_failures >= 2:
+                self.communication_state = "stale"
+                if self._communication_fault_id is None:
+                    self._communication_fault_id = self._new_incident("status_data_incidents")
+                    self._system_alert("status_data_stale", self._communication_fault_id, reason, "warning")
+        self.store.set_meta("communication_health", {
+            "state": self.communication_state, "failures": self._communication_failures,
+            "observed_at": time.time(), "reason": reason,
+        })
+
+    async def _probe_status(self, session: aiohttp.ClientSession) -> tuple[bool, str]:
+        url = self.settings.moonraker_url + "/printer/objects/query"
+        headers = {"X-Api-Key": self.settings.moonraker_api_key} if self.settings.moonraker_api_key else {}
+        try:
+            async with session.get(url, params={"webhooks": "", "print_stats": ""},
+                                   headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                response.raise_for_status()
+                payload = await response.json()
+            result = payload.get("result") if isinstance(payload, dict) else None
+            status = result.get("status") if isinstance(result, dict) else None
+            hooks = status.get("webhooks") if isinstance(status, dict) else None
+            stats = status.get("print_stats") if isinstance(status, dict) else None
+            if (not isinstance(hooks, dict) or hooks.get("state") != "ready"
+                    or not isinstance(stats, dict) or not isinstance(stats.get("state"), str)):
+                return False, "Kalico status query missing valid ready state"
+            return True, "status query valid"
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+            return False, "Moonraker/Kalico status query failed"
+
+    async def _communication_watchdog(self, session: aiohttp.ClientSession):
+        while True:
+            valid, reason = await self._probe_status(session)
+            await self._db_call(self._communication_observation, valid, reason)
+            await asyncio.sleep(15)
+
     async def run(self):
         headers = {"User-Agent": "hermes-plugin-kalico-monitor/0.3"}
-        async with aiohttp.ClientSession(headers=headers, trust_env=False) as session:
-            await self._supervise(self._dispatch(session), self._listen_forever(session))
+        self._db_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kalico-db")
+        try:
+            async with aiohttp.ClientSession(headers=headers, trust_env=False) as session:
+                await self._supervise(self._dispatch(session), self._listen_forever(session),
+                                      self._communication_watchdog(session))
+        finally:
+            # Do not close SQLite while a cancelled await still has a write
+            # running in the executor.
+            executor, self._db_executor = self._db_executor, None
+            await asyncio.to_thread(executor.shutdown, wait=True, cancel_futures=True)
 
 
 def main():

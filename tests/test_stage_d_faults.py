@@ -180,3 +180,41 @@ def test_critical_successor_has_bounded_wait(tmp_path):
         assert db.pending_routes(now=time.time()+61, route="direct")[0]["kind"] == "filament_jam_confirmed"
     finally:
         db.close()
+
+
+@pytest.mark.asyncio
+async def test_database_executor_does_not_block_loop(tmp_path):
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    cfg = config(tmp_path)
+    db = Outbox(cfg.sqlite_path, cfg.printer)
+    monitor = Monitor(cfg, db)
+    monitor._db_executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        task = asyncio.create_task(monitor._db_call(time.sleep, .2))
+        await asyncio.sleep(.02)
+        assert not task.done()
+        await task
+        await monitor._db_call(db.set_meta, "thread_test", 1)
+        assert await monitor._db_call(db.get_meta, "thread_test") == 1
+    finally:
+        monitor._db_executor.shutdown(wait=True)
+        db.close()
+
+
+def test_communication_health_debounces_and_recovers(tmp_path):
+    cfg = config(tmp_path)
+    db = Outbox(cfg.sqlite_path, cfg.printer)
+    monitor = Monitor(cfg, db)
+    try:
+        monitor._communication_observation(False, "missing data")
+        assert not db.pending()
+        monitor._communication_observation(False, "missing data")
+        monitor._communication_observation(False, "missing data")
+        assert db.get_meta("communication_health")["state"] == "stale"
+        assert [a["kind"] for a in db.pending()] == ["status_data_stale"]
+        monitor._communication_observation(True, "valid")
+        assert [a["kind"] for a in db.pending()] == ["status_data_stale", "status_data_recovered"]
+    finally:
+        db.close()

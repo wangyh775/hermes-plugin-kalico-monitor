@@ -19,6 +19,7 @@ DESCRIPTIONS = {
     "moonraker_recovered": "Moonraker 恢复", "nozzle_force_anomaly": "喷嘴力异常",
     **{"filament_" + name: value[0] for name, value in FILAMENT_EVENTS.items()},
     "filament_event_gap": "受力事件流缺失",
+    "status_data_stale": "打印机状态数据失效", "status_data_recovered": "打印机状态数据恢复",
 }
 
 
