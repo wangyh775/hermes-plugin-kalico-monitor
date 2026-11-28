@@ -2,8 +2,8 @@
 import pytest
 
 from kalico_monitor import bootstrap, setup
-from kalico_monitor.diagnostics import count_inherited_feishu_targets
 from kalico_monitor.config import Settings
+from kalico_monitor.diagnostics import count_inherited_feishu_targets
 from kalico_monitor.events import Alert
 from kalico_monitor.monitor import Monitor
 from kalico_monitor.monitor_cfg import read_cfg, save_cfg
