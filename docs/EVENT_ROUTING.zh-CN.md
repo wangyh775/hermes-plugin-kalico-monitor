@@ -4,6 +4,12 @@
 
 Webhook 是另一条机器到机器的信任边界；`HERMES_WEBHOOK_SECRET` 仍必须与 Hermes 两条路由共享并执行 HMAC v2 签名验证。远程 Gateway 必须使用 HTTPS。
 
+
+## PR #19 开发预览
+
+新增 CFG 配置、四种事件路由、飞书双路目标、事件列表与观察、模拟通知及配置应用命令。完整参数、命令和限制见[新版配置参考](CONFIGURATION.zh-CN.md#pr-19cfg-配置与事件管理开发预览)。当前为 Draft，尚未完成 CI 与实机验收；下文旧版 ENV 说明仍适用于主分支。
+
+
 ## 配置
 
 将 `docs/hermes-webhook.example.yaml` 的两条路由**合并**进 Hermes 配置，不要覆盖现有飞书权限或其他路由。
