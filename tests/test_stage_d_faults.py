@@ -73,7 +73,6 @@ async def test_route_database_failure_stops_supervised_dispatch(tmp_path, monkey
         db.close()
 
 
-@pytest.mark.xfail(strict=True, reason="D-M01: malformed ACK status list raises TypeError, kills worker")
 @pytest.mark.asyncio
 async def test_malformed_ack_is_classified_as_retryable_value_error():
     response = Mock()
@@ -89,15 +88,16 @@ async def test_malformed_ack_is_classified_as_retryable_value_error():
         await deliver(session, "http://localhost:8644/test", "test", "PEEK", alert)
 
 
-@pytest.mark.xfail(strict=True, reason="D-M02: critical priority overtakes earlier event in same incident")
 def test_incident_causal_order_precedes_severity(tmp_path):
     db = Outbox(tmp_path / "db", "PEEK")
     try:
         FilamentEventTracker(db).observe(snapshot(event(1), event(2, "jam_confirmed")), {})
         for item in db.unrouted():
             db.ensure_routes(item["id"], ("direct",))
-        assert [item["kind"] for item in db.pending_routes(route="direct")] == [
-            "filament_jam_detected", "filament_jam_confirmed"]
+        first = db.pending_routes(route="direct")
+        assert [item["kind"] for item in first] == ["filament_jam_detected"]
+        db.route_delivered(first[0]["id"], "direct")
+        assert [item["kind"] for item in db.pending_routes(route="direct")] == ["filament_jam_confirmed"]
     finally:
         db.close()
 
@@ -143,5 +143,40 @@ async def test_ack_lost_before_db_commit_preserves_request_identity(tmp_path, mo
         finally:
             worker.cancel()
             await asyncio.gather(worker, return_exceptions=True)
+    finally:
+        db.close()
+
+
+def test_dead_letter_is_terminal_and_replay_keeps_id(tmp_path):
+    db = Outbox(tmp_path / "db", "PEEK")
+    try:
+        aid = db.enqueue(Alert("error", 1, "", "fault", "critical"))
+        db.ensure_routes(aid, ("direct", "agent"))
+        db.route_delivered(aid, "direct")
+        db.route_dead_letter(aid, "agent", "invalid protocol")
+        assert not db.pending_routes()
+        assert db.summary()["failed"] == 1
+        assert db.summary()["delivered"] == 0
+        assert db.dead_letters()[0]["route"] == "agent"
+        assert db.retry_dead_letter(aid, "agent")
+        assert db.pending_routes()[0]["id"] == aid
+        db.route_delivered(aid, "agent")
+        assert db.summary()["delivered"] == 1
+    finally:
+        db.close()
+
+
+def test_critical_successor_has_bounded_wait(tmp_path):
+    import time
+
+    db = Outbox(tmp_path / "db", "PEEK")
+    try:
+        FilamentEventTracker(db).observe(snapshot(event(1), event(2, "jam_confirmed")), {})
+        for item in db.unrouted():
+            db.ensure_routes(item["id"], ("direct",))
+        first = db.pending_routes(route="direct")[0]
+        db.route_failed(first["id"], "direct", "transient")
+        assert not db.pending_routes(route="direct")
+        assert db.pending_routes(now=time.time()+61, route="direct")[0]["kind"] == "filament_jam_confirmed"
     finally:
         db.close()

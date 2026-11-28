@@ -18,7 +18,7 @@ from .filament_events import OBJECT as FILAMENT_OBJECT
 from .filament_events import FilamentEventTracker
 from .force import OBJECT as FORCE_OBJECT
 from .force import ForceEventTracker
-from .notifier import deliver
+from .notifier import PermanentDeliveryError, deliver
 from .policy import parse_modes, routes_for
 from .reports import PeriodicReporter
 from .storage import Outbox
@@ -147,13 +147,17 @@ class Monitor:
                 continue
             item = items[0]
             if not url:
-                self.store.route_failed(item["id"], route, "Webhook route is not configured")
+                self.store.route_dead_letter(item["id"], route, "Webhook route is not configured")
                 LOG.warning("notification %s route is not configured: %s", route, item["id"])
                 await asyncio.sleep(0)
                 continue
             try:
                 await deliver(session, url, self.settings.hermes_secret,
                               self.settings.printer, item, route=route)
+            except PermanentDeliveryError as exc:
+                self.store.route_dead_letter(item["id"], route, str(exc)[:240])
+                LOG.error("notification dead-lettered: kind=%s id=%s route=%s",
+                          item["kind"], item["id"], route)
             except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
                 self.store.route_failed(item["id"], route, type(exc).__name__ + ": " + str(exc)[:100])
                 LOG.warning("notification retry scheduled: kind=%s id=%s route=%s cause=%s",

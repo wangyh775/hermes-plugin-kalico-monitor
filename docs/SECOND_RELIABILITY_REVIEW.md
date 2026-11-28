@@ -1,0 +1,5 @@
+# Second reliability repair / 第二轮可靠性整改
+
+ACK status must be a string with route-specific accepted value. Malformed payload/ACK and permanent HTTP 4xx (except 408/409/425/429) or missing endpoint move only that route to dead letter; transient transport/server failures retain retry. SQLite failed_at is separate from suppressed/delivered; aggregate alert fails if any route permanently fails after all routes terminate. Operator recovery via Outbox.retry_dead_letter retains the original ID; CLI to inspect/replay is pending. Same incident and route block later source sequences until predecessors terminate; critical successors may bypass after 60 seconds. This preserves urgency with bounded causal waiting, not strict global ordering. Existing synchronous SQLite, single-printer DB scope, and communication health remain separate work.
+
+ACK 必须为字符串且符合路由语义。非法负载/ACK、永久 HTTP 4xx（408/409/425/429 除外）、缺少端点进入该路由死信；临时网络和服务器故障继续重试。failed_at 与投递及过滤独立；所有路由终止后任一路永久失败则告警整体失败。Outbox.retry_dead_letter 可保留原 ID 重新入队，CLI 仍待实现。同故障同路由按源序号阻塞后继，关键后继等待 60 秒后可放行，不保证全局严格顺序。同步 SQLite、单打印机 DB 范围及通信健康仍待专项处理。

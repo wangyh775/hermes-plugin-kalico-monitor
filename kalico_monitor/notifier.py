@@ -35,15 +35,30 @@ def make_request(alert: dict, secret: str, printer: str, timestamp: int | None =
     }
 
 
+class PermanentDeliveryError(ValueError):
+    """Configuration, payload or protocol error requiring operator review."""
+
+
 async def deliver(session: aiohttp.ClientSession, url: str, secret: str,
                   printer: str, alert: dict, route: str = "direct") -> dict[str, Any]:
-    body, headers = make_request(alert, secret, printer, route=route)
+    try:
+        body, headers = make_request(alert, secret, printer, route=route)
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        raise PermanentDeliveryError("invalid stored event payload") from exc
     async with session.post(url, data=body, headers=headers,
                             timeout=aiohttp.ClientTimeout(total=15)) as response:
-        response.raise_for_status()
-        result = await response.json()
+        try:
+            response.raise_for_status()
+        except aiohttp.ClientResponseError as exc:
+            if 400 <= exc.status < 500 and exc.status not in (408, 409, 425, 429):
+                raise PermanentDeliveryError(f"HTTP {exc.status}; check route configuration") from exc
+            raise
+        try:
+            result = await response.json()
+        except (ValueError, aiohttp.ContentTypeError) as exc:
+            raise PermanentDeliveryError("invalid webhook JSON acknowledgement") from exc
     accepted = {"accepted", "duplicate"} if route == "agent" else {"delivered", "duplicate"}
-    if not isinstance(result, dict) or result.get("status") not in accepted:
-        status = result.get("status") if isinstance(result, dict) else type(result).__name__
-        raise ValueError(f"Webhook did not confirm delivery: {status}")
+    status = result.get("status") if isinstance(result, dict) else None
+    if not isinstance(status, str) or status not in accepted:
+        raise PermanentDeliveryError("Webhook did not confirm delivery: invalid acknowledgement")
     return result
