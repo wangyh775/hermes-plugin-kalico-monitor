@@ -90,6 +90,29 @@ def _git_head(path: Path) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
+def count_inherited_feishu_targets(values: dict[str, str], config: dict) -> int:
+    """Validate configured vs actual Hermes chat routes without sending a message.
+
+    Returns the number of routes that intentionally inherit Hermes's home chat.
+    An empty chat ID is not proof of final Feishu delivery.
+    """
+    webhook_routes = config["platforms"]["webhook"]["extra"]["routes"]
+    inherited = 0
+    for route_name, key in (("kalico-alert", "KALICO_DIRECT_CHAT_ID"),
+                            ("kalico-analysis", "KALICO_AGENT_CHAT_ID")):
+        route = webhook_routes[route_name]
+        extra = route.get("deliver_extra") or {}
+        if not isinstance(extra, dict):
+            raise ValueError(f"{route_name}: deliver_extra 必须是映射")
+        actual = str(extra.get("chat_id", "") or "")
+        expected = values.get(key, "")
+        if actual != expected:
+            raise ValueError(f"{route_name} 目标群与 monitor.cfg 不一致")
+        if not actual:
+            inherited += 1
+    return inherited
+
+
 def collect(root: Path, hermes_home: Path, env_path: Path,
             *, network: bool = True) -> list[Check]:
     """Produce independent PASS/FAIL items; continue if one subsystem is broken."""
@@ -206,23 +229,9 @@ def collect(root: Path, hermes_home: Path, env_path: Path,
         except (KeyError, TypeError, ValueError) as exc:
             port = None
             checks.append(Check("Webhook 路由/签名", "FAIL", str(exc)))
-        # Signature validity does not prove the notification will reach
-        # the selected Feishu group. Compare both explicit destinations.
+        # Signature validity does not prove a delivered Feishu message.
         try:
-            webhook_routes = config["platforms"]["webhook"]["extra"]["routes"]
-            inherited = 0
-            for route_name, key in (("kalico-alert", "KALICO_DIRECT_CHAT_ID"),
-                                    ("kalico-analysis", "KALICO_AGENT_CHAT_ID")):
-                route = webhook_routes[route_name]
-                extra = route.get("deliver_extra") or {}
-                if not isinstance(extra, dict):
-                    raise ValueError(f"{route_name}: deliver_extra 必须是映射")
-                actual = str(extra.get("chat_id", "") or "")
-                expected = values.get(key, "")
-                if actual != expected:
-                    raise ValueError(f"{route_name} 目标群与 monitor.cfg 不一致")
-                if not actual:
-                    inherited += 1
+            inherited = count_inherited_feishu_targets(values, config)
             if inherited:
                 checks.append(Check("飞书通知目标", "WARN",
                                     f"{inherited} 条路由继承 Hermes 默认群；"
