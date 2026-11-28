@@ -374,12 +374,23 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
     # Hermes uses the platform home channel when deliver_extra.chat_id is absent.
     # This supports an already configured Feishu bot without an extra prompt.
     config, port = plan_routes(config, raw, chat, replace_chat=bool(chat_id))
-    for route_name, key in (("kalico-alert", "KALICO_DIRECT_CHAT_ID"), ("kalico-analysis", "KALICO_AGENT_CHAT_ID")):
+    for route_name, key in (("kalico-alert", "KALICO_DIRECT_CHAT_ID"),
+                            ("kalico-analysis", "KALICO_AGENT_CHAT_ID")):
         target = validate_field(key, chat_id or previous.get(key, ""))
         route = config["platforms"]["webhook"]["extra"]["routes"][route_name]
+        explicit = bool(chat_id) or (overrides is not None and key in overrides)
         if target:
             route.setdefault("deliver_extra", {})["chat_id"] = target
-        previous[key] = str(route.get("deliver_extra", {}).get("chat_id", ""))
+        elif explicit:
+            # An explicit empty value means inherit Hermes's default Feishu
+            # destination, not resurrect a previously configured chat_id.
+            extra = route.get("deliver_extra")
+            if isinstance(extra, dict):
+                extra.pop("chat_id", None)
+                if not extra:
+                    route.pop("deliver_extra", None)
+        extra = route.get("deliver_extra") or {}
+        previous[key] = str(extra.get("chat_id", ""))
     after_stream = io.StringIO()
     yaml_editor().dump(config, after_stream)
     hermes_changed = before_hermes != after_stream.getvalue()
@@ -506,6 +517,7 @@ EDITABLE = (
     "KALICO_STALL_MINUTES", "KALICO_DISCONNECT_SECONDS",
     "KALICO_EVENT_MODES", "KALICO_ALLOWED_CHAT_IDS",
     "KALICO_STATUS_FIELDS", "KALICO_CHAMBER_OBJECT",
+    "KALICO_DIRECT_CHAT_ID", "KALICO_AGENT_CHAT_ID",
 )
 
 
@@ -572,10 +584,11 @@ def reconfigure_menu(values: dict[str, str], ask=input, out=print,
             continue
         if choice in {"15", "16"}:
             key = "KALICO_DIRECT_CHAT_ID" if choice == "15" else "KALICO_AGENT_CHAT_ID"
-            raw = ask(f"{LABELS[key]} [{pending.get(key, '')}]（回车保留）：").strip()
+            raw = ask(f"{LABELS[key]} [{pending.get(key, '')}]"
+                      "（回车保留，- 清空并继承 Hermes 默认群）：").strip()
             if raw:
                 try:
-                    pending[key] = validate_field(key, raw)
+                    pending[key] = validate_field(key, "" if raw == "-" else raw)
                 except ValueError as exc:
                     out(str(exc))
             continue
