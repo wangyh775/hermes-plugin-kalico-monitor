@@ -6,7 +6,7 @@ import time
 from typing import Any
 
 from .custom_config import DEFAULT_MESSAGE_FIELDS
-from .event_registry import row_metadata
+from .event_registry import row_metadata, utc_timestamp
 from .handlers import PLACEHOLDER
 
 LABELS = {
@@ -22,6 +22,13 @@ LABELS = {
     "object": "状态对象", "field": "监测字段", "value": "当前值",
     "threshold": "阈值", "source_type": "来源类型", "source": "来源",
     "source_method": "原生通知方法", "source_object": "来源对象", "trigger": "触发路径",
+    "received_at": "接收时间", "queued_at": "入队时间", "source_occurred_at": "源事件时间",
+    "previous_state": "原状态", "current_state": "当前状态", "klippy_state": "Klippy 状态",
+    "params_summary": "原始参数摘要", "service": "服务", "service_state": "服务状态",
+    "throttle_bits": "限频位", "gcode_response": "G-code 响应", "action": "动作",
+    "queue_state": "队列状态", "name": "名称", "job_filename": "任务文件",
+    "incident_id": "故障关联 ID", "source_event_id": "源事件 ID", "generation": "任务代次",
+    "sequence": "事件序号",
 }
 
 
@@ -59,7 +66,9 @@ def render_direct_message(alert: dict, printer: str,
             f"{window.get('duration_s', '—')} s / "
             f"{window.get('sample_count', '—')} 原始点"
         )}
-    values = {**event, **basic, **row_metadata(alert)}
+    values = {**event, **basic, **row_metadata(alert),
+              "queued_at": utc_timestamp(alert.get("created", time.time())),
+              "source_occurred_at": None}
     # Hermes DIRECT_PROMPT owns the static heading; avoid two titles.
     def scalar(field):
         value = values.get(field)

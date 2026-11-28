@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 SOURCE_TYPES = (
     "moonraker_native", "moonraker_lifecycle", "klipper_extension",
@@ -20,11 +21,30 @@ class EventDefinition:
     native_method: str | None = None
     explicit_only: bool = False
     forwardable: bool = True
+    severity: str = "info"
+    default_mode: str = "direct"
+    schema_version: int = 1
+    dedup_policy: str = "source_or_sequence"
+    payload_schema: str = "object_or_null"
+
+
+SEVERITIES = {
+    "paused": "warning", "error": "critical", "klippy_shutdown": "critical",
+    "klippy_disconnected": "critical", "moonraker_unreachable": "critical",
+    "stalled": "warning", "filament_jam_detected": "warning",
+    "filament_runout_detected": "warning", "filament_jam_confirmed": "critical",
+    "filament_recovery_failed": "warning", "monitor_degraded": "warning",
+    "notify_cpu_throttled": "warning",
+}
 
 
 def _group(names, source_type, source, source_object=None):
     return {
-        kind: EventDefinition(kind, source_type, source, title, source_object)
+        kind: EventDefinition(kind, source_type, source, title, source_object,
+                              severity=SEVERITIES.get(kind, "info"),
+                              payload_schema=("filament_journal_v1" if source_type == "klipper_extension"
+                                              else "status_v1" if source_type == "moonraker_lifecycle"
+                                              else "object_or_null"))
         for kind, title in names.items()
     }
 
@@ -41,6 +61,7 @@ BUILTINS = {
     **_group({
         "stalled": "打印停滞", "print_progress": "定时进度",
         "moonraker_unreachable": "Moonraker 断开", "moonraker_recovered": "Moonraker 恢复",
+        "monitor_degraded": "监控能力退化", "monitor_recovered": "监控能力恢复",
     }, "monitor_internal", "monitor"),
     **_group({
         "filament_jam_detected": "疑似堵头", "filament_runout_detected": "断料或送料异常",
@@ -87,6 +108,8 @@ NATIVE = {
     method: EventDefinition(
         method, "moonraker_native", "moonraker", title,
         native_method=method, explicit_only=True, forwardable=method in _FORWARD,
+        severity=SEVERITIES.get(method, "info"), default_mode="off",
+        dedup_policy="identical_consecutive_payload_short_window", payload_schema="rpc_params_v1",
     )
     for method, title in {**_FORWARD, **_CATALOG_ONLY}.items()
 }
@@ -98,7 +121,8 @@ def definition(kind: str, rules=()) -> EventDefinition | None:
         return REGISTRY[kind]
     for rule in rules:
         if rule.name == kind:
-            return EventDefinition(kind, "custom_rule", "moonraker", "自定义数值规则", rule.object)
+            return EventDefinition(kind, "custom_rule", "moonraker", "自定义数值规则", rule.object,
+                                   severity=rule.severity, default_mode=rule.mode, payload_schema="threshold_v1")
     return None
 
 
@@ -111,13 +135,17 @@ def metadata(kind: str, payload=None, observed_method=None, trigger=None) -> dic
     if entry is None and isinstance(payload, dict) and payload.get("source") == "moonraker":
         entry = EventDefinition(kind, "custom_rule", "moonraker", "", payload.get("object"))
     return {
-        "schema_version": 1,
+        "schema_version": entry.schema_version if entry else 1,
         "source_type": entry.source_type if entry else None,
         "source": entry.source if entry else None,
         "source_object": entry.source_object if entry else None,
         "source_method": observed_method,
         "trigger": trigger,
     }
+
+
+def utc_timestamp(value: float) -> str:
+    return datetime.fromtimestamp(value, timezone.utc).isoformat()
 
 
 def row_metadata(row: dict) -> dict:

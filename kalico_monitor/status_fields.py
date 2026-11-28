@@ -33,7 +33,10 @@ def parse_fields(raw: str) -> tuple[str, ...]:
 def number(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    converted = float(value)
+    try:
+        converted = float(value)
+    except OverflowError:
+        return None
     return converted if math.isfinite(converted) else None
 
 

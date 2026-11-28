@@ -7,7 +7,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from .event_registry import metadata
+from .event_registry import metadata, utc_timestamp
 from .events import Alert
 
 
@@ -94,7 +94,11 @@ class Outbox:
                             json.dumps(alert.payload, ensure_ascii=False, allow_nan=False)
                             if alert.payload is not None else None,
                             json.dumps(metadata(alert.kind, alert.payload, alert.source_method,
-                                                alert.trigger), ensure_ascii=False)))
+                                                alert.trigger) | {"received_at": utc_timestamp(alert.received_at),
+                                                                  "source_event_id": alert.source_id,
+                                                                  "generation": alert.generation,
+                                                                  "sequence": alert.sequence},
+                                       ensure_ascii=False)))
         return digest
 
     def enqueue_source(self, alert: Alert) -> bool:
@@ -112,7 +116,8 @@ class Outbox:
         rows = self.conn.execute("""SELECT a.* FROM alerts a WHERE NOT EXISTS
             (SELECT 1 FROM alert_routes r WHERE r.alert_id=a.id)
             AND a.delivered IS NULL AND a.suppressed IS NULL
-            ORDER BY a.created LIMIT ?""", (limit,)).fetchall()
+            ORDER BY CASE a.severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,
+                     a.created LIMIT ?""", (limit,)).fetchall()
         return [dict(r) for r in rows]
 
     def _finalize_routes(self, alert_id: str) -> None:
@@ -178,13 +183,39 @@ class Outbox:
                 self._finalize_routes(alert_id)
         return suppressed
 
-    def pending_routes(self, now: float | None = None, limit: int = 20) -> list[dict]:
+    def pending_routes(self, now: float | None = None, limit: int = 20, route: str | None = None) -> list[dict]:
         now = time.time() if now is None else now
         rows = self.conn.execute("""SELECT a.*,r.route FROM alert_routes r
             JOIN alerts a ON a.id=r.alert_id WHERE r.delivered IS NULL
             AND r.suppressed IS NULL AND a.suppressed IS NULL
-            AND r.next_retry<=? ORDER BY a.created LIMIT ?""", (now, limit)).fetchall()
+            AND r.next_retry<=? AND (? IS NULL OR r.route=?)
+            ORDER BY CASE a.severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,
+                     a.created LIMIT ?""", (now, route, route, limit)).fetchall()
         return [dict(r) for r in rows]
+
+    def allow_notification(self, alert_id: str, route: str, kind: str, seconds: float) -> bool:
+        """Reserve a rate-limit slot durably; retries of the same item keep their slot."""
+        attempt = self.conn.execute(
+            "SELECT attempts FROM alert_routes WHERE alert_id=? AND route=?",
+            (alert_id, route)).fetchone()
+        if attempt is not None and attempt["attempts"] > 0:
+            return True
+        key = f"notify_limit:{route}:{kind}"
+        previous = self.get_meta(key, {})
+        now = time.time()
+        if previous.get("id") == alert_id:
+            return True
+        if 0 <= now - previous.get("at", 0) < seconds:
+            return False
+        self.set_meta(key, {"id": alert_id, "at": now})
+        return True
+
+    def route_suppressed(self, alert_id: str, route: str, reason: str) -> None:
+        with self.conn:
+            self.conn.execute("""UPDATE alert_routes SET suppressed=?,last_error=?
+                WHERE alert_id=? AND route=? AND delivered IS NULL AND suppressed IS NULL""",
+                (time.time(), reason, alert_id, route))
+            self._finalize_routes(alert_id)
 
     def route_delivered(self, alert_id: str, route: str) -> None:
         with self.conn:

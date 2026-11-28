@@ -17,7 +17,10 @@ META_KEY = "periodic_report_v1"
 def _number(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
     return number if math.isfinite(number) else None
 
 
@@ -55,8 +58,8 @@ def report_fields(status: dict) -> dict:
         "remaining": remaining_time(stats, sd),
         "nozzle": _temperature(_object(status, "extruder")),
         "bed": _temperature(_object(status, "heater_bed")),
-        "layer": layer_info.get("current_layer"),
-        "total_layers": layer_info.get("total_layer"),
+        "layer": _number(layer_info.get("current_layer")),
+        "total_layers": _number(layer_info.get("total_layer")),
     }
 
 
@@ -99,7 +102,7 @@ class PeriodicReporter:
 
     def suspend(self) -> None:
         """Forget an active countdown after transport loss, retaining sequence IDs."""
-        if self.interval_seconds == 0 or not self.tracker:
+        if not self.tracker:
             return
         if self.tracker.get("next_due_at") is not None:
             self.tracker = {**self.tracker, "next_due_at": None}
@@ -130,7 +133,9 @@ class PeriodicReporter:
                 "generation": generation,
                 "filename": filename,
                 "interval_seconds": self.interval_seconds,
-                "sequence": 0,
+                "sequence": (tracker.get("sequence", 0) if tracker and
+                             tracker.get("generation") == generation and
+                             tracker.get("filename") == filename else 0),
                 "next_due_at": now + self.interval_seconds if active else None,
             }
             self.store.report_checkpoint(META_KEY, tracker)
@@ -159,7 +164,7 @@ class PeriodicReporter:
             detail=report_detail(status),
             severity="info",
             payload=report_fields(status),
-            sequence=sequence,
+            sequence=sequence, trigger="timer",
         )
         # One SQLite transaction: durable dedupe key + next due + notification.
         updated = {

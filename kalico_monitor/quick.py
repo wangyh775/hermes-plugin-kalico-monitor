@@ -162,6 +162,10 @@ def read_monitor(path: Path, limit: int = 5) -> dict:
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT value FROM metadata WHERE key='last_heartbeat_at'").fetchone()
         heartbeat = None if row is None else json.loads(row["value"])
+        health = {r["key"]: json.loads(r["value"]) for r in conn.execute(
+            "SELECT key,value FROM metadata WHERE key IN "
+            "('subscription_health','transport_connected','native_oversize_count',"
+            "'dispatcher_heartbeat_direct','dispatcher_heartbeat_agent')")}
         # A running old daemon may not have migrated the schema yet.
         has_suppressed = any(row[1] == "suppressed" for row in
                              conn.execute("PRAGMA table_info(alerts)"))
@@ -174,7 +178,7 @@ def read_monitor(path: Path, limit: int = 5) -> dict:
             "ORDER BY created DESC LIMIT ?", (min(max(limit, 1), 10),)
         ).fetchall()
     return {"exists": True, "pending": count, "recent": [dict(r) for r in rows],
-            "heartbeat": heartbeat}
+            "heartbeat": heartbeat, "health": health}
 
 
 def format_alerts(data: dict, printer: str = "Kalico") -> str:
@@ -204,8 +208,21 @@ def format_health(data: dict, printer: str = "Kalico", now: float | None = None)
         state = f"最近心跳 {int(now - heartbeat)} 秒前"
     else:
         state = "心跳过期（监听服务可能中断）"
+    health = data.get("health", {})
+    subscription = health.get("subscription_health", {})
+    transport = health.get("transport_connected")
+    transport_text = "已连接" if transport is True else "断开" if transport is False else "未知"
+    lines = [f"Moonraker 连接：{transport_text}", f"订阅：{subscription.get('state', 'unknown')}"]
+    if health.get("native_oversize_count"):
+        lines.append(f"原生超限载荷：{health['native_oversize_count']} 条")
+    if subscription.get("missing"):
+        lines.append("不可用：" + ", ".join(subscription["missing"]))
+    for route in ("direct", "agent"):
+        stamp = _number(health.get(f"dispatcher_heartbeat_{route}"))
+        live = stamp is not None and 0 <= now - stamp <= 90
+        lines.append(f"{route} 分发：{'运行中' if live else '未知或过期'}")
     return (f"🩺 {printer} · Monitor 状态\n"
-            f"{state}\n待发送告警：{data['pending']} 条\n"
+            f"{state}\n待发送告警：{data['pending']} 条\n" + "\n".join(lines) + "\n" +
             "注：心跳反映监控进程，不代表飞书通知已验证送达。")
 
 

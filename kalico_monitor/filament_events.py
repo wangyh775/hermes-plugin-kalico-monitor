@@ -5,19 +5,14 @@ import json
 import math
 from typing import Any
 
+from .event_registry import BUILTINS
 from .events import Alert
 from .storage import Outbox
 
 OBJECT = "filament_force"
 EVENTS = {
-    "jam_detected": ("疑似堵头，等待二次诊断", "warning"),
-    "runout_detected": ("断料或送料异常", "warning"),
-    "diagnosis_result": ("浮空二次诊断结果", "info"),
-    "jam_confirmed": ("浮空挤出高阻力，需处理", "critical"),
-    "z_adjusted": ("首层 Z 补偿", "info"),
-    "recovery_started": ("自动恢复并验证", "info"),
-    "recovery_verified": ("受力验证通过", "info"),
-    "recovery_failed": ("自动恢复失败", "warning"),
+    kind.removeprefix("filament_"): (entry.description, entry.severity)
+    for kind, entry in BUILTINS.items() if entry.source_type == "klipper_extension"
 }
 
 
@@ -43,7 +38,9 @@ def valid_event(event: Any) -> bool:
         or event["kind"] not in EVENTS):
         return False
     window = event.get("window")
-    if event["kind"] in ("jam_detected", "runout_detected"):
+    if event["kind"] in ("jam_detected", "runout_detected") and not isinstance(window, dict):
+        return False
+    if window is not None:
         if not isinstance(window, dict):
             return False
         samples = window.get("samples")
@@ -54,7 +51,7 @@ def valid_event(event: Any) -> bool:
             return False
     try:
         return len(json.dumps(event, allow_nan=False)) <= 256_000
-    except (ValueError, TypeError, OverflowError):
+    except (ValueError, TypeError, OverflowError, RecursionError):
         return False
 
 
@@ -83,7 +80,7 @@ class FilamentEventTracker:
     def __init__(self, store: Outbox):
         self.store = store
 
-    def observe(self, status: dict, state: dict) -> int:
+    def observe(self, status: dict, state: dict, *, source_method=None) -> int:
         obj = status.get(OBJECT)
         events = obj.get("events") if isinstance(obj, dict) else None
         if not isinstance(events, list):
@@ -101,6 +98,6 @@ class FilamentEventTracker:
             alert = Alert(kind="filament_" + kind, generation=generation,
                           filename=filename, detail=detail(event),
                           severity=EVENTS[kind][1], source_id=event["event_id"],
-                          payload=event)
+                          payload=event, trigger="extension_journal", source_method=source_method)
             count += int(self.store.enqueue_source(alert))
         return count
