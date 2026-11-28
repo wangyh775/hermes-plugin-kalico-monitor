@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Kalico Monitor Webhook envelope v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "printer",
+    "kind",
+    "severity",
+    "filename",
+    "detail",
+    "alert_id",
+    "occurred_at",
+    "queued_at",
+    "received_at",
+    "source_occurred_at",
+    "source_type",
+    "source",
+    "source_method",
+    "source_object",
+    "trigger"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "printer": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string"
+    },
+    "severity": {
+      "enum": [
+        "info",
+        "warning",
+        "critical"
+      ]
+    },
+    "filename": {
+      "type": "string"
+    },
+    "detail": {
+      "type": "string"
+    },
+    "alert_id": {
+      "type": "string"
+    },
+    "occurred_at": {
+      "type": "string",
+      "description": "Legacy local queue time"
+    },
+    "queued_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "received_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "source_occurred_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "source_type": {
+      "enum": [
+        "moonraker_native",
+        "moonraker_lifecycle",
+        "klipper_extension",
+        "monitor_internal",
+        "custom_rule",
+        "external",
+        null
+      ]
+    },
+    "source": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "source_method": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "source_object": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "trigger": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "source_event_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "generation": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "sequence": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "event": {
+      "type": "object"
+    },
+    "message": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": true
+}
