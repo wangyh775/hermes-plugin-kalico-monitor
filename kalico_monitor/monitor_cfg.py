@@ -5,7 +5,6 @@ Connection credentials and HMAC secrets deliberately remain in monitor.env.
 """
 from __future__ import annotations
 
-import configparser
 import os
 import re
 import tempfile
@@ -37,29 +36,15 @@ def cfg_path(env_path: Path | None = None, values: dict[str, str] | None = None)
             (env_path or Path("~/.config/kalico-monitor/monitor.env").expanduser()).with_suffix(".cfg"))
 
 
-def _parser() -> configparser.ConfigParser:
-    parser = configparser.ConfigParser(interpolation=None, strict=True, delimiters=(":", "="))
-    parser.optionxform = str
-    return parser
-
-
 def read_cfg(path: Path) -> dict[str, str]:
-    """Parse only the documented sections; never execute shell or G-code."""
-    if not path.exists():
-        return {}
-    if path.is_symlink():
-        raise ValueError(f"拒绝读取符号链接形式的 Monitor CFG：{path}")
-    parser = _parser()
-    try:
-        with path.open(encoding="utf-8") as stream:
-            parser.read_file(stream)
-    except (configparser.Error, UnicodeError) as exc:
-        raise ValueError(f"Monitor CFG 格式错误：{path}: {exc}") from exc
-    if parser.defaults():
-        raise ValueError("monitor.cfg 不支持 [DEFAULT] 节")
-    from .custom_config import load_extensions
-    load_extensions(path)  # Validate extensible message and event sections.
+    return load_cfg(path)[0]
 
+
+def load_cfg(path: Path):
+    """One parser and validator for base settings, rules, templates and handlers."""
+    from .custom_config import _parser, load_sections
+    parser = _parser(path)
+    sections = load_sections(path, parser)
     from .setup import validate_field  # Deferred to keep the parser import-light.
     values: dict[str, str] = {}
     if parser.has_section("monitor"):
@@ -88,7 +73,7 @@ def read_cfg(path: Path) -> dict[str, str]:
         value = ",".join(pairs)
         parse_modes(value)
         values["KALICO_EVENT_MODES"] = value
-    return values
+    return values, sections
 
 
 def render_cfg(values: dict[str, str]) -> str:

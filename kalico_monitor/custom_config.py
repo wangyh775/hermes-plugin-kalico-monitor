@@ -13,6 +13,26 @@ from pathlib import Path
 
 from .policy import EVENT_MODES
 
+PLACEHOLDER = re.compile(r"\{([A-Za-z_][A-Za-z0-9_.]*)\}")
+
+def validate_template(value: str, fields: set[str], *, nested_event: bool = False) -> str:
+    value = value.strip()
+    if not value or len(value) > 8000 or any(
+        ord(c) < 32 and c not in "\n\t" for c in value
+    ):
+        raise ValueError("模板必须为非空文本，最多 8000 字符，不允许控制字符")
+    for match in PLACEHOLDER.finditer(value):
+        name = match.group(1)
+        if name not in fields and not (
+            nested_event and re.fullmatch(r"event(?:\.[A-Za-z_][A-Za-z0-9_]*)+", name)
+        ):
+            raise ValueError(f"未知模板字段：{name}")
+    remainder = PLACEHOLDER.sub("", value)
+    if "{" in remainder or "}" in remainder:
+        raise ValueError("模板仅支持简单字段占位符，不支持表达式或嵌套花括号")
+    return value
+
+
 NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 OBJECT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?: [A-Za-z0-9_-]+)?$")
 FIELD = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
@@ -54,7 +74,10 @@ class Reliability:
 
 
 def load_reliability(path: Path) -> Reliability:
-    parser = _parser(path)
+    return _reliability(_parser(path))
+
+
+def _reliability(parser) -> Reliability:
     if not parser.has_section("reliability"):
         return Reliability()
     values = dict(parser.items("reliability"))
@@ -96,19 +119,27 @@ def _parser(path: Path) -> configparser.ConfigParser:
                 parser.read_file(f)
         except (configparser.Error, UnicodeError) as exc:
             raise ValueError(f"Monitor CFG 格式错误：{exc}") from exc
+    if parser.defaults():
+        raise ValueError("monitor.cfg 不支持 [DEFAULT] 节")
     return parser
 
 
 def load_extensions(path: Path) -> tuple[dict[str, tuple[str, ...]], tuple[EventRule, ...]]:
-    """Validate optional [message ...] and [event ...] sections strictly."""
-    parser = _parser(path)
+    messages, rules, _, _, _ = load_sections(path)
+    return messages, rules
+
+
+def load_sections(path: Path, parser=None):
+    """Parse and validate configuration extensions once per load."""
+    parser = _parser(path) if parser is None else parser
+    reliability = _reliability(parser)
+    templates = {}
     messages = {"default": DEFAULT_MESSAGE_FIELDS}
     rules: list[EventRule] = []
     for section in parser.sections():
         if section in BASE_SECTIONS:
             continue
         if section == "reliability":
-            load_reliability(path)
             continue
         if section == "message" or section.startswith("message "):
             name = "default" if section == "message" else section[8:]
@@ -120,8 +151,8 @@ def load_extensions(path: Path) -> tuple[dict[str, tuple[str, ...]], tuple[Event
             if "fields" in options:
                 messages[name] = parse_field_list(options["fields"])
             else:
-                # An event-specific template overrides default fields.
                 messages[name] = DEFAULT_MESSAGE_FIELDS
+                templates[name] = validate_template(options["template"], MESSAGE_FIELDS)
         elif section == "handlers" or section.startswith("handler "):
             continue
         elif section.startswith("event "):
@@ -174,20 +205,17 @@ def load_extensions(path: Path) -> tuple[dict[str, tuple[str, ...]], tuple[Event
             entry = definition(kind, rules)
             if not entry or not entry.forwardable:
                 raise ValueError(f"消息配置引用未知或不可转发事件：{kind}")
-    parse_handlers(parser, rules, MESSAGE_FIELDS)
-    return messages, tuple(rules)
-
+    handlers = parse_handlers(parser, rules, templates)
+    return messages, tuple(rules), handlers, reliability, templates
 
 def load_handlers(path: Path):
-    from .handlers import parse_handlers
-    _, rules = load_extensions(path)
-    return parse_handlers(_parser(path), rules, MESSAGE_FIELDS)
+    return load_sections(path)[2]
 
 
 def preserved_extension_text(path: Path) -> str:
     """Preserve validated extensions when the interactive wizard rewrites CFG."""
-    load_extensions(path)
     parser = _parser(path)
+    load_sections(path, parser)
     lines: list[str] = []
     for section in parser.sections():
         if section in BASE_SECTIONS:

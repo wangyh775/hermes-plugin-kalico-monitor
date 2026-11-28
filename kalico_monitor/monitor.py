@@ -280,8 +280,8 @@ class Monitor:
                     continue
                 try:
                     options = {}
-                    if self.settings.handler_config.templates:
-                        options["message_templates"] = self.settings.handler_config.templates
+                    if self.settings.message_templates:
+                        options["message_templates"] = self.settings.message_templates
                     await deliver(session, url, self.settings.hermes_secret,
                                   self.settings.printer, item, route=route,
                                   message_fields=self.settings.message_fields, **options)

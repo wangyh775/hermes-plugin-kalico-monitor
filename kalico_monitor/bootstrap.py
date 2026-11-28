@@ -20,7 +20,7 @@ from pathlib import Path
 
 from ruamel.yaml import YAML
 
-from .custom_config import load_extensions, load_handlers
+from .custom_config import load_sections
 from .handlers import sync_routes
 from .notifier import make_request
 from .policy import parse_modes
@@ -390,8 +390,7 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
         previous[key] = str(extra.get("chat_id", ""))
     from .monitor_cfg import cfg_path, save_cfg
     monitor_cfg = cfg_path(env_path)
-    handlers = load_handlers(monitor_cfg)
-    _, rules = load_extensions(monitor_cfg)
+    _, rules, handlers, _, _ = load_sections(monitor_cfg)
     sync_routes(config["platforms"]["webhook"]["extra"]["routes"], handlers, raw)
     after_stream = io.StringIO()
     yaml_editor().dump(config, after_stream)
