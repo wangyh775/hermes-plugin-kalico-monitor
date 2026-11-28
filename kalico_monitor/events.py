@@ -64,20 +64,20 @@ class EventProcessor:
                              trigger=trigger if event["kind"] != "stalled" else "timer"))
         return out
 
-    def set_snapshot(self, status: dict, now: float, *, source_method=None, trigger="snapshot") -> tuple[dict, list[Alert]]:
+    def set_snapshot(self, status: dict, now: float, *, source_method=None, trigger="snapshot", allow_stall=True) -> tuple[dict, list[Alert]]:
         """A subscription reply is a full snapshot; reconcile with persisted state."""
         self.status = {key: dict(value) for key, value in status.items() if isinstance(value, dict)}
         self.has_snapshot = True
-        return self.evaluate(now, source_method=source_method, trigger=trigger, allow_stall=False)
+        return self.evaluate(now, source_method=source_method, trigger=trigger, allow_stall=allow_stall)
 
-    def apply_update(self, update: dict, now: float, *, source_method=None, trigger="state_update") -> tuple[dict, list[Alert]]:
+    def apply_update(self, update: dict, now: float, *, source_method=None, trigger="state_update", allow_stall=True) -> tuple[dict, list[Alert]]:
         """Changes are deltas, not complete objects. Merge fields in-place."""
         if not self.has_snapshot:
             return self.previous or {}, []
         for key, delta in update.items():
             if isinstance(delta, dict):
                 self.status.setdefault(key, {}).update(delta)
-        return self.evaluate(now, source_method=source_method, trigger=trigger, allow_stall=False)
+        return self.evaluate(now, source_method=source_method, trigger=trigger, allow_stall=allow_stall)
 
     def evaluate(self, now: float, *, source_method=None, trigger="timer", allow_stall=True) -> tuple[dict, list[Alert]]:
         sample = sample_from_status(self.status)
@@ -98,7 +98,7 @@ class EventProcessor:
         if any(x in lowered for x in ("error", "failed", "shutdown", "bad probe")):
             self.recent_errors.append(message.strip()[:300])
 
-    def handle_packet(self, packet: dict, now: float) -> tuple[dict | None, list[Alert]]:
+    def handle_packet(self, packet: dict, now: float, *, allow_stall=True) -> tuple[dict | None, list[Alert]]:
         """Parse notifications. Shutdown event itself is followed by a full query.
 
         Notify_klippy_shutdown has no payload; callers must query state_message
@@ -111,5 +111,5 @@ class EventProcessor:
         if method == "notify_gcode_response" and params:
             self.ingest_gcode_response(params[0])
         if method == "notify_status_update" and params and isinstance(params[0], dict):
-            return self.apply_update(params[0], now, source_method=method)
+            return self.apply_update(params[0], now, source_method=method, allow_stall=allow_stall)
         return None, []

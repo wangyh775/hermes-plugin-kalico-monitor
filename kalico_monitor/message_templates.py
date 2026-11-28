@@ -27,6 +27,8 @@ LABELS = {
     "params_summary": "原始参数摘要", "service": "服务", "service_state": "服务状态",
     "throttle_bits": "限频位", "gcode_response": "G-code 响应", "action": "动作",
     "queue_state": "队列状态", "name": "名称", "job_filename": "任务文件",
+    "incident_id": "故障关联 ID", "source_event_id": "源事件 ID", "generation": "任务代次",
+    "sequence": "事件序号",
 }
 
 

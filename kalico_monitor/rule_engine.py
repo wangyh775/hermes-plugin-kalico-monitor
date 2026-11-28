@@ -1,7 +1,7 @@
 """Generate read-only threshold events from subscribed Moonraker status.
 
 This never issues printer commands. Rising-edge threshold alarms require a
-continuous valid observation window; a false/missing reading rearms the rule.
+continuous valid observation window; only a valid normal reading rearms the rule.
 """
 from __future__ import annotations
 

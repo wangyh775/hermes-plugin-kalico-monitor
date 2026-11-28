@@ -24,6 +24,10 @@ def parse_modes(value: str) -> dict[str, str]:
 def mode_for(kind: str, modes: dict[str, str]) -> str:
     if kind in NATIVE:
         return modes.get(kind, NATIVE[kind].default_mode) if NATIVE[kind].forwardable else "off"
+    if kind == "nozzle_force_anomaly":
+        return "off"
+    if kind not in modes and definition(kind) is None:
+        return "off"
     return modes.get(kind, modes["default"])
 
 

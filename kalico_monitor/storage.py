@@ -94,7 +94,10 @@ class Outbox:
                             json.dumps(alert.payload, ensure_ascii=False, allow_nan=False)
                             if alert.payload is not None else None,
                             json.dumps(metadata(alert.kind, alert.payload, alert.source_method,
-                                                alert.trigger) | {"received_at": utc_timestamp(alert.received_at)},
+                                                alert.trigger) | {"received_at": utc_timestamp(alert.received_at),
+                                                                  "source_event_id": alert.source_id,
+                                                                  "generation": alert.generation,
+                                                                  "sequence": alert.sequence},
                                        ensure_ascii=False)))
         return digest
 

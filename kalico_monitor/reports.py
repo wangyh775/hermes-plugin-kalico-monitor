@@ -102,7 +102,7 @@ class PeriodicReporter:
 
     def suspend(self) -> None:
         """Forget an active countdown after transport loss, retaining sequence IDs."""
-        if self.interval_seconds == 0 or not self.tracker:
+        if not self.tracker:
             return
         if self.tracker.get("next_due_at") is not None:
             self.tracker = {**self.tracker, "next_due_at": None}
@@ -164,7 +164,7 @@ class PeriodicReporter:
             detail=report_detail(status),
             severity="info",
             payload=report_fields(status),
-            sequence=sequence,
+            sequence=sequence, trigger="timer",
         )
         # One SQLite transaction: durable dedupe key + next due + notification.
         updated = {

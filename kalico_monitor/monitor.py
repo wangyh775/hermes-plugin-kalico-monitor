@@ -19,7 +19,7 @@ from .filament_events import FilamentEventTracker
 from .handlers import agent_url
 from .native_events import NativeEventAdapter
 from .notifier import deliver
-from .policy import parse_modes, routes_for
+from .policy import parse_modes, routes_for, validate_modes
 from .reports import PeriodicReporter
 from .rule_engine import RuleEngine, numeric_field
 from .storage import Outbox
@@ -52,6 +52,7 @@ class Monitor:
     def __init__(self, settings: Settings, store: Outbox):
         self.settings = settings
         self.event_modes = parse_modes(settings.event_modes)
+        validate_modes(self.event_modes, settings.event_rules)
         # Explicit [events] overrides take precedence over an event rule's mode.
         for rule in settings.event_rules:
             self.event_modes.setdefault(rule.name, rule.mode)
@@ -166,7 +167,8 @@ class Monitor:
                       severity: str = "critical", source_method: str | None = None,
                       trigger: str | None = None):
         event = Alert(kind=kind, generation=generation, filename="", detail=detail,
-                      severity=severity, source_method=source_method, trigger=trigger)
+                      severity=severity, source_method=source_method, trigger=trigger,
+                       payload={"incident_id": generation})
         incident_keys = {
             "klippy_disconnected": ("klippy", True),
             "klippy_recovered": ("klippy", False),
@@ -246,7 +248,7 @@ class Monitor:
                          item["kind"], item["id"], route)
             await asyncio.sleep(0.2)
 
-    def _process_snapshot(self, processor: EventProcessor, snapshot: dict):
+    def _process_snapshot(self, processor: EventProcessor, snapshot: dict, source_method=None):
         self._heartbeat()
         self.last_status_received_at = time.monotonic()
         self.subscription_active = True
@@ -261,16 +263,18 @@ class Monitor:
                                "Moonraker subscription restored", "info")
         self.ws_offline_since = None
         self.ws_offline_notified = False
-        state, alerts = processor.set_snapshot(snapshot, time.monotonic())
+        state, alerts = processor.set_snapshot(snapshot, time.monotonic(), allow_stall=False)
         self._record(processor, state, alerts)
         hooks = snapshot.get("webhooks", {})
         if isinstance(hooks, dict) and hooks.get("state") == "ready":
-            self._klippy_recovered()
+            self._klippy_recovered(source_method)
         elif isinstance(hooks, dict) and hooks.get("state") in {"disconnected", "startup"}:
             self._klippy_disconnected()
+            self._invalidate_subscription()
         elif isinstance(hooks, dict) and hooks.get("state") in {"shutdown", "error"}:
             self.klippy_down_since = None
             self.shutdown_query_since = None
+            self._invalidate_subscription("klippy_shutdown")
 
     def _klippy_disconnected(self, source_method=None):
         if self.klippy_down_since is None:
@@ -302,7 +306,7 @@ class Monitor:
         current, alerts = processor.apply_update(
             {"webhooks": hooks}, time.monotonic(),
             source_method=cause or "notify_klippy_shutdown",
-            trigger="state_query" if cause else "shutdown_query_timeout")
+            trigger="state_query" if cause else "shutdown_query_timeout", allow_stall=False)
         self._record(processor, current, alerts)
         self.shutdown_query_since = None
 
@@ -391,8 +395,9 @@ class Monitor:
             await ws.send_json({**subscriptions[subscription_index], "id": request_id})
             requested_at = time.monotonic()
             last_refresh = requested_at
+            subscription_cause = None
             while True:
-                if self.subscription_active and not pending and time.monotonic() - last_refresh >= 30:
+                if not pending and self.shutdown_query_since is None and time.monotonic() - last_refresh >= 30:
                     request_id = max(10, request_id + 1)
                     pending = True
                     requested_at = last_refresh = time.monotonic()
@@ -442,7 +447,8 @@ class Monitor:
                         raise RuntimeError("Moonraker subscription missing core objects")
                     pending = False
                     last_refresh = time.monotonic()
-                    self._process_snapshot(processor, snapshot)
+                    self._process_snapshot(processor, snapshot, subscription_cause)
+                    subscription_cause = None
                     continue
                 if reply_id == 2:
                     if self.subscription_active or (self.shutdown_query_since is None and self.klippy_down_since is None):
@@ -461,7 +467,6 @@ class Monitor:
                         hooks_state = snapshot["webhooks"].get("state")
                         if hooks_state in {"shutdown", "error"}:
                             self._finish_shutdown(processor, update["webhooks"], cause)
-                        if hooks_state in {"shutdown", "error"}:
                             self.shutdown_query_since = None
                             self.klippy_down_since = None
                         elif hooks_state == "ready":
@@ -493,6 +498,7 @@ class Monitor:
                     requested_at = time.monotonic()
                     request_id = max(10, request_id + 1)
                     pending = True
+                    subscription_cause = method
                     await ws.send_json({**subscriptions[subscription_index], "id": request_id})
                 else:
                     if method == "notify_status_update" and not self.subscription_active:
@@ -501,7 +507,7 @@ class Monitor:
                     params = packet.get("params")
                     if method == "notify_status_update" and isinstance(params, list) and params and isinstance(params[0], dict):
                         self._remember_fields(params[0])
-                    current, alerts = processor.handle_packet(packet, time.monotonic())
+                    current, alerts = processor.handle_packet(packet, time.monotonic(), allow_stall=False)
                     if current is not None:
                         if method == "notify_status_update":
                             self.last_status_received_at = time.monotonic()
@@ -511,6 +517,9 @@ class Monitor:
                             self._klippy_recovered(method)
                         elif hooks.get("state") in {"disconnected", "startup"}:
                             self._klippy_disconnected(method)
+                            self._invalidate_subscription()
+                        elif hooks.get("state") in {"shutdown", "error"}:
+                            self._invalidate_subscription("klippy_shutdown")
                 self._tick(processor)
 
     async def _listen_forever(self, session):

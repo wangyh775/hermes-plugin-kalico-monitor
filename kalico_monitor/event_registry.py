@@ -135,7 +135,7 @@ def metadata(kind: str, payload=None, observed_method=None, trigger=None) -> dic
     if entry is None and isinstance(payload, dict) and payload.get("source") == "moonraker":
         entry = EventDefinition(kind, "custom_rule", "moonraker", "", payload.get("object"))
     return {
-        "schema_version": 1,
+        "schema_version": entry.schema_version if entry else 1,
         "source_type": entry.source_type if entry else None,
         "source": entry.source if entry else None,
         "source_object": entry.source_object if entry else None,

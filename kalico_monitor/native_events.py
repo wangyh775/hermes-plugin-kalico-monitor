@@ -31,10 +31,12 @@ class NativeEventAdapter:
         if not isinstance(params, list):
             return False
         try:
-            serialized = json.dumps(params, ensure_ascii=True, allow_nan=False)
+            serialized = json.dumps(params, ensure_ascii=True, allow_nan=False, sort_keys=True)
         except (TypeError, ValueError, RecursionError, OverflowError):
             return False
         if len(serialized) > MAX_PAYLOAD_BYTES:
+            count = self.store.get_meta("native_oversize_count", 0)
+            self.store.set_meta("native_oversize_count", count + 1)
             return False
         try:
             json.dumps(params, ensure_ascii=False, allow_nan=False).encode("utf-8")
