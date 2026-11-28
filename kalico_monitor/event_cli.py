@@ -5,8 +5,8 @@ import argparse
 import json
 import urllib.request
 
-from .monitor_cfg import LIFECYCLE_EVENTS
 from .filament_events import EVENTS as FILAMENT_EVENTS
+from .monitor_cfg import LIFECYCLE_EVENTS
 from .policy import parse_modes
 from .setup import default_path, read_env
 
