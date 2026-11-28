@@ -332,7 +332,7 @@ def main():
         from .setup import main as config_main
         config_main(sys.argv[2:])
         return
-    if len(sys.argv) > 1 and sys.argv[1] in {"events", "discover"}:
+    if len(sys.argv) > 1 and sys.argv[1] in {"events", "discover", "test"}:
         from .event_cli import main as event_main
         event_main(sys.argv[1:])
         return
