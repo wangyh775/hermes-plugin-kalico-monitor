@@ -11,7 +11,7 @@ import re
 import tempfile
 from pathlib import Path
 
-from .policy import MODES, parse_modes
+from .policy import EVENT_MODES, parse_modes
 
 MONITOR_OPTIONS = {
     "progress_report_minutes": "KALICO_PROGRESS_REPORT_MINUTES",
@@ -69,8 +69,8 @@ def read_cfg(path: Path) -> dict[str, str]:
     if parser.has_section("events"):
         pairs = []
         for kind, mode in parser.items("events"):
-            if not _VALID_KIND.fullmatch(kind) or mode not in MODES:
-                raise ValueError(f"无效事件策略：{kind}={mode}（仅支持 direct/agent/both）")
+            if not _VALID_KIND.fullmatch(kind) or mode not in EVENT_MODES:
+                raise ValueError(f"无效事件策略：{kind}={mode}（仅支持 off/direct/agent/both）")
             pairs.append(f"{kind}={mode}")
         value = ",".join(pairs)
         parse_modes(value)
@@ -91,7 +91,6 @@ def render_cfg(values: dict[str, str]) -> str:
     lines.extend(["", "[events]", "# default applies to unlisted events."])
     raw = values.get("KALICO_EVENT_MODES", "")
     if raw:
-        pairs = [x for x in raw.split(",") if x.strip()]
         validated = parse_modes(raw)
         ordered = ["default"] + [name for name in LIFECYCLE_EVENTS if name in validated]
         ordered += [name for name in validated if name not in ordered]
@@ -133,7 +132,7 @@ def edit_events(current: str, ask=input, out=print) -> str:
         if name not in events and name != "default":
             events.append(name)
     while True:
-        out("\n事件路由 (direct=直推飞书 / agent=模型分析 / both=两路)")
+        out("\n事件路由 (off=关闭 / direct=直推飞书 / agent=模型分析 / both=两路)")
         out(f"[d] 默认策略: {policies['default']}")
         for i, name in enumerate(events, 1):
             out(f"[{i}] {name}: {policies.get(name, policies['default'])}")
@@ -160,10 +159,10 @@ def edit_events(current: str, ask=input, out=print) -> str:
         else:
             out("无效选项。")
             continue
-        mode = ask(f"{name} 处理方式 [direct/agent/both]（回车保留）：").strip().lower()
+        mode = ask(f"{name} 处理方式 [off/direct/agent/both]（回车保留）：").strip().lower()
         if not mode:
             continue
-        if mode not in MODES:
+        if mode not in EVENT_MODES:
             out("仅支持 direct、agent、both")
             continue
         policies[name] = mode
