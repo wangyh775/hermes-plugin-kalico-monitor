@@ -117,7 +117,8 @@ def render_cfg(values: dict[str, str]) -> str:
         ordered += [name for name in validated if name not in ordered]
     else:
         validated = parse_modes("")
-        ordered = ["default", "started", "paused", "resumed", "complete"]
+        # Preserve the inheritance rule: no implicit per-event overrides.
+        ordered = ["default"]
     for kind in ordered:
         lines.append(f"{kind}: {validated.get(kind, validated['default'])}")
     lines.append("")
