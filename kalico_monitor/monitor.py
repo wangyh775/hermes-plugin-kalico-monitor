@@ -14,9 +14,10 @@ import aiohttp
 
 from .config import Settings
 from .events import Alert, EventProcessor
+from .filament_events import OBJECT as FILAMENT_OBJECT
+from .filament_events import FilamentEventTracker
 from .force import OBJECT as FORCE_OBJECT
 from .force import ForceEventTracker
-from .filament_events import OBJECT as FILAMENT_OBJECT, FilamentEventTracker
 from .notifier import deliver
 from .policy import parse_modes, routes_for
 from .reports import PeriodicReporter
