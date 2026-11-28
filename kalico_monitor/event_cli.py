@@ -12,7 +12,6 @@ from .policy import mode_for, parse_modes
 from .setup import default_path, read_env
 
 
-
 def main(argv: list[str]) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=("events", "discover", "test"))

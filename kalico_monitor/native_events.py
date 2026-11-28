@@ -30,10 +30,14 @@ class NativeEventAdapter:
         if not isinstance(params, list):
             return False
         try:
-            serialized = json.dumps(params, ensure_ascii=False, allow_nan=False)
+            serialized = json.dumps(params, ensure_ascii=True, allow_nan=False)
         except (TypeError, ValueError, RecursionError, OverflowError):
             return False
-        if len(serialized.encode("utf-8")) > MAX_PAYLOAD_BYTES:
+        if len(serialized) > MAX_PAYLOAD_BYTES:
+            return False
+        try:
+            json.dumps(params, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        except UnicodeError:
             return False
         now = time.monotonic() if now is None else now
         if method in self.last and now - self.last[method] < COOLDOWN_SECONDS:

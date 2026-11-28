@@ -173,6 +173,7 @@ class Monitor:
 
     def _klippy_recovered(self, source_method=None):
         self.klippy_down_since = None
+        self.disconnect_method = None
         if self.klippy_down_alerted:
             self._system_alert("klippy_recovered", self.klippy_down_id,
                                "Moonraker reports Kalico ready again; check before restarting print", "info",
@@ -358,9 +359,9 @@ class Monitor:
                         self._record(processor, current, alerts)
                         hooks = processor.status.get("webhooks", {})
                         if hooks.get("state") == "ready":
-                            self._klippy_recovered()
+                            self._klippy_recovered(method)
                         elif hooks.get("state") in {"disconnected", "startup"}:
-                            self._klippy_disconnected()
+                            self._klippy_disconnected(method)
                 self._tick(processor)
 
     async def run(self):
