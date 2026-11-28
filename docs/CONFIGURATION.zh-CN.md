@@ -3,9 +3,9 @@
 以下参数以当前 `kalico_monitor/config.py`、`quick.py` 和 `deploy/kalico-monitor.env.example` 为准。配置主要通过 `~/.config/kalico-monitor/monitor.env` 注入 systemd 服务；修改后重启生效。**目前没有通用的 `events.yaml` 规则引擎，也不支持在飞书中动态调整任意事件阈值。**
 
 
-## PR #19：CFG 配置与事件管理（开发预览）
+## Monitor CFG 配置与事件管理
 
-> 以下功能仅在 PR #19 开发分支中，尚未完成 CI 和实机验收，不建议直接用于生产打印。
+> PR #19 已合并；PR #20 修复配置与通知策略一致性问题。仍需在部署环境验证 Hermes Gateway、飞书群与真实打印事件，不建议在无人值守生产打印时将通知作为唯一故障保护。
 
 配置目录为 `~/.config/kalico-monitor/`。`monitor.cfg` 是独立 Monitor 服务的配置，不是 Kalico 的 printer.cfg。CFG 中明确设置的业务字段优先于旧 ENV；未设置的字段继续使用 ENV。当前安装器仍会同步部分 ENV 字段以兼容旧版本，尚未完全消除重复存储。API Key、Webhook Secret 保留在 ENV，勿提交到 Git。
 
@@ -46,7 +46,7 @@ moonraker_recovered: direct
 nozzle_force_anomaly: both
 ```
 
-事件策略：`off` 不发送新通知；`direct` 零 LLM 直推；`agent` 模型分析；`both` 两路独立投递。已经分配的历史投递任务不会因策略变化而取消。关闭通知不关闭打印状态跟踪。定时报告、停滞及喷嘴力监控仍需各自启用。喷嘴力事件依赖兼容的状态对象，任意自定义 Kalico 内部事件尚不能自动接入。
+事件策略：`off` 禁止新通知；`direct` 零 LLM 直推；`agent` 模型分析；`both` 两路独立投递。PR #20 起，Monitor 重启加载新策略时，还会撤销旧队列中不再允许的待发送路由；已经实际投递的路由保留历史记录。`off` 会在数据库和 `/kalico alerts` 中标为“已过滤”，不会虚计“已投递”。关闭通知不关闭打印状态跟踪。定时报告、停滞及喷嘴力监控仍需各自启用。喷嘴力事件依赖兼容的状态对象，任意自定义 Kalico 内部事件尚不能自动接入。
 
 ```bash
 .venv/bin/kalico-monitor config --show
@@ -61,8 +61,8 @@ nozzle_force_anomaly: both
 - `config --apply` 请求确认后同步 Hermes 路由并重启服务；普通 config 向导只保存本地文件。
 - `events` 列出注册事件及策略；`events --watch` 观察原始 Moonraker WebSocket 消息；`discover` 查询状态对象，不是 Kalico 内部事件注册表。
 - `test paused` 按策略实际发送标记为模拟的通知，可能调用 LLM；不修改打印机或生产队列。Agent accepted 仅表示受理。
-- `bash install.sh --reconfigure`：14 逐事件策略，15 直推会话 ID，16 分析会话 ID，11 确认保存。飞书目标同步到 Hermes 的两个 webhook 路由；`KALICO_ALLOWED_CHAT_IDS` 仅限制入站查询权限。
-- 目前仍需验证回滚、旧配置兼容、插件更新及真实飞书投递。手工编辑 CFG 后使用 apply，而不是仅重启服务来同步 Hermes 目标。
+- `bash install.sh --reconfigure`：14 逐事件策略，15 直推会话 ID，16 分析会话 ID，11 确认保存。菜单 15/16 输入 `-` 清除显式 chat_id，恢复继承 Hermes 默认群；其余填写 `oc_...` 会同步到对应 Webhook 路由。`KALICO_ALLOWED_CHAT_IDS` 仅限制入站查询权限。
+- PR #20 提供回滚、旧版 SQLite 和禁用重试回归测试；仍需人工验证插件更新及真实飞书送达。手工编辑 CFG 后使用 apply 以同步 Hermes 路由，不能只重启服务来同步飞书目标。生成的 CFG 默认仅写 `default: direct`，未单独指定的事件继承默认策略。
 
 
 ## 0. 交互式配置
