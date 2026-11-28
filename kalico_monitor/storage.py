@@ -34,6 +34,16 @@ class Outbox:
             PRIMARY KEY(alert_id, route),
             FOREIGN KEY(alert_id) REFERENCES alerts(id)
         )""")
+        # Existing SQLite databases must survive an in-place upgrade.
+        for table in ("alerts", "alert_routes"):
+            columns = {row[1] for row in self.conn.execute(f"PRAGMA table_info({table})")}
+            if "suppressed" not in columns:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN suppressed REAL")
+        # v0.2 marked discarded events as delivered. Correct the old counters.
+        self.conn.execute("""UPDATE alerts SET suppressed=delivered, delivered=NULL
+            WHERE last_error='suppressed by event policy' AND delivered IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM alert_routes r
+                            WHERE r.alert_id=alerts.id AND r.delivered IS NOT NULL)""")
         self.conn.commit()
 
     def close(self):
@@ -84,24 +94,78 @@ class Outbox:
     def unrouted(self, limit: int = 30) -> list[dict]:
         rows = self.conn.execute("""SELECT a.* FROM alerts a WHERE NOT EXISTS
             (SELECT 1 FROM alert_routes r WHERE r.alert_id=a.id)
-            AND a.delivered IS NULL ORDER BY a.created LIMIT ?""", (limit,)).fetchall()
+            AND a.delivered IS NULL AND a.suppressed IS NULL
+            ORDER BY a.created LIMIT ?""", (limit,)).fetchall()
         return [dict(r) for r in rows]
+
+    def _finalize_routes(self, alert_id: str) -> None:
+        """Finish once every route was delivered or suppressed, never before."""
+        counts = self.conn.execute("""SELECT
+            SUM(CASE WHEN delivered IS NULL AND suppressed IS NULL THEN 1 ELSE 0 END),
+            SUM(CASE WHEN delivered IS NOT NULL THEN 1 ELSE 0 END)
+            FROM alert_routes WHERE alert_id=?""", (alert_id,)).fetchone()
+        if counts[0]:
+            return
+        if counts[1]:
+            self.conn.execute("""UPDATE alerts
+                SET delivered=?, suppressed=NULL, last_error=''
+                WHERE id=? AND delivered IS NULL AND suppressed IS NULL""",
+                (time.time(), alert_id))
+        else:
+            self.conn.execute("""UPDATE alerts
+                SET suppressed=?, last_error='suppressed by event policy'
+                WHERE id=? AND delivered IS NULL AND suppressed IS NULL""",
+                (time.time(), alert_id))
 
     def ensure_routes(self, alert_id: str, routes: tuple[str, ...]) -> None:
         with self.conn:
             if not routes:
-                self.conn.execute("UPDATE alerts SET delivered=?, last_error=? WHERE id=? AND delivered IS NULL AND NOT EXISTS (SELECT 1 FROM alert_routes WHERE alert_id=?)",
-                                  (time.time(), "suppressed by event policy", alert_id, alert_id))
+                # Store a distinct suppressed terminal state, not a fake delivery.
+                self.conn.execute("""UPDATE alerts
+                    SET suppressed=?, last_error='suppressed by event policy'
+                    WHERE id=? AND delivered IS NULL AND suppressed IS NULL
+                    AND NOT EXISTS (SELECT 1 FROM alert_routes WHERE alert_id=?)""",
+                    (time.time(), alert_id, alert_id))
                 return
             for route in routes:
                 self.conn.execute("""INSERT OR IGNORE INTO alert_routes
                     (alert_id,route,next_retry) VALUES (?,?,?)""",
-                                  (alert_id, route, time.time()))
+                    (alert_id, route, time.time()))
+
+    def reconcile_policy(self, modes: dict[str, str]) -> int:
+        """Stop old queued retries whose routes are no longer allowed.
+
+        A previous delivered route stays recorded, but undelivered Agent/Direct
+        jobs are suppressed if the updated policy removes them. This is run
+        at daemon startup after parsing the currently effective configuration.
+        """
+        from .policy import routes_for
+
+        suppressed = 0
+        with self.conn:
+            rows = self.conn.execute("""SELECT r.alert_id, a.kind, r.route
+                FROM alert_routes r JOIN alerts a ON a.id=r.alert_id
+                WHERE r.delivered IS NULL AND r.suppressed IS NULL""").fetchall()
+            affected: set[str] = set()
+            now = time.time()
+            for row in rows:
+                if row["route"] not in routes_for(row["kind"], modes):
+                    self.conn.execute("""UPDATE alert_routes
+                        SET suppressed=?, last_error='suppressed by event policy'
+                        WHERE alert_id=? AND route=? AND delivered IS NULL
+                          AND suppressed IS NULL""",
+                        (now, row["alert_id"], row["route"]))
+                    affected.add(row["alert_id"])
+                    suppressed += 1
+            for alert_id in affected:
+                self._finalize_routes(alert_id)
+        return suppressed
 
     def pending_routes(self, now: float | None = None, limit: int = 20) -> list[dict]:
         now = time.time() if now is None else now
         rows = self.conn.execute("""SELECT a.*,r.route FROM alert_routes r
             JOIN alerts a ON a.id=r.alert_id WHERE r.delivered IS NULL
+            AND r.suppressed IS NULL AND a.suppressed IS NULL
             AND r.next_retry<=? ORDER BY a.created LIMIT ?""", (now, limit)).fetchall()
         return [dict(r) for r in rows]
 
@@ -109,11 +173,7 @@ class Outbox:
         with self.conn:
             self.conn.execute("""UPDATE alert_routes SET delivered=?,last_error=''
                 WHERE alert_id=? AND route=?""", (time.time(), alert_id, route))
-            outstanding = self.conn.execute("""SELECT COUNT(*) FROM alert_routes
-                WHERE alert_id=? AND delivered IS NULL""", (alert_id,)).fetchone()[0]
-            if outstanding == 0:
-                self.conn.execute("""UPDATE alerts SET delivered=?,last_error=''
-                    WHERE id=?""", (time.time(), alert_id))
+            self._finalize_routes(alert_id)
 
     def route_failed(self, alert_id: str, route: str, error: str) -> None:
         row = self.conn.execute("""SELECT attempts FROM alert_routes
@@ -124,13 +184,14 @@ class Outbox:
         delay = min(300, 2 ** min(attempts, 8))
         with self.conn:
             self.conn.execute("""UPDATE alert_routes SET attempts=?,next_retry=?,last_error=?
-                WHERE alert_id=? AND route=?""",
+                WHERE alert_id=? AND route=? AND suppressed IS NULL AND delivered IS NULL""",
                               (attempts, time.time() + delay, error[:240], alert_id, route))
 
     def pending(self, now: float | None = None, limit: int = 20) -> list[dict]:
         now = time.time() if now is None else now
         rows = self.conn.execute("""SELECT * FROM alerts WHERE delivered IS NULL
-            AND next_retry<=? ORDER BY created LIMIT ?""", (now, limit)).fetchall()
+            AND suppressed IS NULL AND next_retry<=?
+            ORDER BY created LIMIT ?""", (now, limit)).fetchall()
         return [dict(row) for row in rows]
 
     def delivered(self, alert_id: str) -> None:
@@ -150,11 +211,14 @@ class Outbox:
 
     def summary(self) -> dict:
         counts = self.conn.execute("""SELECT
-          SUM(CASE WHEN delivered IS NULL THEN 1 ELSE 0 END) pending,
-          SUM(CASE WHEN delivered IS NOT NULL THEN 1 ELSE 0 END) delivered
+          SUM(CASE WHEN delivered IS NULL AND suppressed IS NULL THEN 1 ELSE 0 END) pending,
+          SUM(CASE WHEN delivered IS NOT NULL THEN 1 ELSE 0 END) delivered,
+          SUM(CASE WHEN suppressed IS NOT NULL THEN 1 ELSE 0 END) suppressed
           FROM alerts""").fetchone()
-        rows = self.conn.execute("SELECT kind,severity,filename,detail,created,delivered FROM alerts ORDER BY created DESC LIMIT 10").fetchall()
+        rows = self.conn.execute("""SELECT kind,severity,filename,detail,
+            created,delivered,suppressed FROM alerts ORDER BY created DESC LIMIT 10""").fetchall()
         return {"printer": self.printer, "state": self.get_state(),
                 "pending": counts["pending"] or 0,
                 "delivered": counts["delivered"] or 0,
+                "suppressed": counts["suppressed"] or 0,
                 "recent": [dict(r) for r in rows]}
