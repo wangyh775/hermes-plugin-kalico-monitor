@@ -17,7 +17,8 @@ def test_atomic_outbox_dedup_and_reopen(tmp_path):
     store = Outbox(path, "PEEK-01")
     assert store.get_state() == state
     assert store.pending()[0]["id"] == pending_id
-    store.delivered(pending_id)
+    store.ensure_routes(pending_id, ('direct',))
+    store.route_delivered(pending_id, 'direct')
     assert store.pending() == []
     assert store.summary()["delivered"] == 1
     store.close()
@@ -27,8 +28,10 @@ def test_retry_is_scheduled_not_discarded(tmp_path):
     store = Outbox(tmp_path / "alerts.sqlite3", "printer")
     alert = Alert(kind="error", generation=1, filename="", severity="critical", detail="bad")
     key = store.enqueue(alert)
-    store.failed(key, "timeout")
-    assert store.pending() == []
-    future = store.pending(now=time.time() + 120)
-    assert len(future) == 1 and future[0]["attempts"] == 1
+    store.ensure_routes(key, ('direct',))
+    store.route_failed(key, "direct", "timeout")
+    assert store.pending_routes(route="direct") == []
+    future = store.pending_routes(now=time.time() + 120, route="direct")
+    assert len(future) == 1 and future[0]["id"] == key
+    assert store.conn.execute("SELECT attempts FROM alert_routes WHERE alert_id=?", (key,)).fetchone()[0] == 1
     store.close()

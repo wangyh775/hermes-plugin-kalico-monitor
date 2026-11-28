@@ -33,13 +33,8 @@ SUBSCRIBE = {"jsonrpc": "2.0", "method": "printer.objects.subscribe",
              "params": {"objects": {"print_stats": None, "webhooks": None,
                                     "virtual_sdcard": None, "extruder": None,
                                     "heater_bed": None}}, "id": 1}
-def subscribe_request(include_force: bool = False, *, filament_only: bool = False,
-                      legacy_only: bool = False, extra_objects: tuple[str, ...] = ()) -> dict:
-    """Only subscribe to filament_force, plus validated custom Moonraker objects.
-
-    The old compatibility keyword arguments are accepted but no longer
-    subscribe to the obsolete nozzle_force_monitor object.
-    """
+def subscribe_request(include_force: bool = False, *, extra_objects: tuple[str, ...] = ()) -> dict:
+    """Subscribe to Moonraker objects; filament_force is independent."""
     objects = dict(SUBSCRIBE["params"]["objects"])
     if include_force:
         objects[FILAMENT_OBJECT] = ["events"]
@@ -233,8 +228,14 @@ class Monitor:
         LOG.warning("queued %s %s", kind, detail)
 
     async def _dispatch(self, session: aiohttp.ClientSession):
-        await self._supervise(*(self._dispatch_route(session, route)
-                                for route in ("direct", "agent")))
+        await self._supervise(self._route_events(), self._dispatch_route(session, "direct"),
+                              self._dispatch_route(session, "agent"))
+
+    async def _route_events(self):
+        while True:
+            for item in self.store.unrouted(limit=30):
+                self.store.ensure_routes(item["id"], routes_for(item["kind"], self.event_modes))
+            await asyncio.sleep(0.2)
 
     @staticmethod
     async def _supervise(*coroutines):
@@ -255,13 +256,6 @@ class Monitor:
             if time.monotonic() - heartbeat_at >= 15:
                 self.store.set_meta(f"dispatcher_heartbeat_{route}", time.time())
                 heartbeat_at = time.monotonic()
-            for item in self.store.unrouted(limit=30):
-                routes = routes_for(item["kind"], self.event_modes)
-                # Persist both tasks even when the analysis endpoint is absent.
-                # The direct alert must never depend on Agent configuration.
-                self.store.ensure_routes(item["id"], routes)
-                if not routes:
-                    LOG.info("notification suppressed: kind=%s id=%s", item["kind"], item["id"])
             for item in self.store.pending_routes(limit=1, route=route):
                 if item["kind"] == "print_progress" and time.time() - item["created"] > 1800:
                     self.store.route_suppressed(item["id"], route, "stale progress report")
@@ -328,11 +322,7 @@ class Monitor:
         self.field_seen.clear()
         self._remember_fields(snapshot)
         self._capabilities({k: v for k, v in snapshot.items() if k != '_monitor_job'})
-        if self.ws_offline_notified:
-            self._system_alert("moonraker_recovered", self.ws_offline_id,
-                               "Moonraker subscription restored", "info")
-        self.ws_offline_since = None
-        self.ws_offline_notified = False
+        self._moonraker_responsive()
         if self.settings.chamber_object and self.settings.chamber_object in snapshot:
             snapshot = {**snapshot, "heater_generic chamber": snapshot[self.settings.chamber_object]}
         state, alerts = processor.set_snapshot(snapshot, time.monotonic(), allow_stall=False)
@@ -557,15 +547,7 @@ class Monitor:
                 if not valid_rpc:
                     continue
                 self.last_transport_seen = time.monotonic()
-                if valid_rpc:
-                    self.probe_pending = None
-                    if self.store.get_meta("rpc_health") != "responsive":
-                        self.store.set_meta("rpc_health", "responsive")
-                    if self.ws_offline_notified:
-                        self._system_alert("moonraker_recovered", self.ws_offline_id,
-                                           "Moonraker RPC responsive; prior fault may not have been delivered", "info")
-                    self.ws_offline_notified = False
-                    self.ws_offline_since = None
+                self._moonraker_responsive()
                 if isinstance(reply_id, str) and reply_id.startswith("monitor-probe-"):
                     self._tick(processor)
                     continue
@@ -706,23 +688,38 @@ class Monitor:
                 raise
             except (aiohttp.ClientError, OSError, TimeoutError,
                     ConnectionError, RuntimeError) as exc:
-                self.shutdown_query_since = None
                 self.live_socket = None
-                self.probe_pending = None
-                self._invalidate_subscription("disconnected")
-                self.store.set_meta("transport_connected", False)
-                self.store.set_meta("rpc_health", "unresponsive")
+                self._moonraker_lost()
+                self._confirm_moonraker_loss()
                 LOG.warning("Moonraker WebSocket problem: %s", type(exc).__name__)
-                if self.ws_offline_since is None:
-                    self.ws_offline_since = time.monotonic()
-                if (not self.ws_offline_notified and
-                        time.monotonic() - self.ws_offline_since >= self.settings.disconnect_seconds):
-                    self.ws_offline_id = self._new_incident("moonraker_incidents")
-                    self._system_alert("moonraker_unreachable", self.ws_offline_id,
-                                       "Moonraker WebSocket is unavailable")
-                    self.ws_offline_notified = True
                 self._heartbeat()
             await asyncio.sleep(3)
+
+    def _moonraker_responsive(self):
+        self.probe_pending = None
+        if self.store.get_meta("rpc_health") != "responsive":
+            self.store.set_meta("rpc_health", "responsive")
+        if self.ws_offline_notified:
+            self._system_alert("moonraker_recovered", self.ws_offline_id,
+                               "Moonraker RPC responsive; prior fault may not have been delivered", "info")
+        self.ws_offline_notified = False
+        self.ws_offline_since = None
+
+    def _moonraker_lost(self, since=None):
+        self.shutdown_query_since = None
+        self.probe_pending = None
+        self._invalidate_subscription("disconnected")
+        self.store.set_meta("transport_connected", False)
+        self.store.set_meta("rpc_health", "unresponsive")
+        if self.ws_offline_since is None:
+            self.ws_offline_since = time.monotonic() if since is None else since
+
+    def _confirm_moonraker_loss(self):
+        if (self.ws_offline_since is not None and not self.ws_offline_notified
+                and time.monotonic() - self.ws_offline_since >= self.settings.disconnect_seconds):
+            self.ws_offline_id = self._new_incident("moonraker_incidents")
+            self._system_alert("moonraker_unreachable", self.ws_offline_id, "Moonraker transport unavailable")
+            self.ws_offline_notified = True
 
     async def _probe_transport(self):
         """Application-level liveness test, separate from subscription success."""
@@ -734,10 +731,7 @@ class Monitor:
         if self.probe_pending and elapsed >= self.settings.disconnect_seconds:
             self.transport_lost = True
             self.connection_epoch += 1
-            self.ws_offline_since = seen
-            self._invalidate_subscription("disconnected")
-            self.store.set_meta("transport_connected", False)
-            self.store.set_meta("rpc_health", "unresponsive")
+            self._moonraker_lost(seen)
             # Reader checks transport_lost on every iteration, even if close stalls.
             try:
                 await asyncio.wait_for(ws.close(), timeout=2)
@@ -755,18 +749,13 @@ class Monitor:
     async def _communication_watchdog(self):
         while True:
             await self._probe_transport()
-            if (self.ws_offline_since is not None and not self.ws_offline_notified
-                    and time.monotonic() - self.ws_offline_since >= self.settings.disconnect_seconds):
-                self.ws_offline_id = self._new_incident("moonraker_incidents")
-                self._system_alert("moonraker_unreachable", self.ws_offline_id, "Moonraker transport unavailable")
-                self.ws_offline_notified = True
+            self._confirm_moonraker_loss()
             await asyncio.sleep(0.5)
 
     async def _maintenance(self):
         while True:
-            await asyncio.sleep(60)
-            # Short transactions, separate scheduling from the watchdog.
-            self.store.archive_info(time.time() - 7 * 86400, limit=100)
+            await asyncio.sleep(3600)
+            self.store.archive_info(time.time() - 7 * 86400, limit=1000)
             self.store.update_storage_health()
 
     async def run(self):

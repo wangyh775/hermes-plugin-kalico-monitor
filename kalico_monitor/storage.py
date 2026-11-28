@@ -399,21 +399,6 @@ class Outbox:
             ORDER BY created LIMIT ?""", (now, limit)).fetchall()
         return [dict(row) for row in rows]
 
-    def delivered(self, alert_id: str) -> None:
-        with self.conn:
-            self.conn.execute("UPDATE alerts SET delivered=?,last_error='' WHERE id=?",
-                              (time.time(), alert_id))
-
-    def failed(self, alert_id: str, error: str) -> None:
-        row = self.conn.execute("SELECT attempts FROM alerts WHERE id=?", (alert_id,)).fetchone()
-        if not row:
-            return
-        attempts = int(row["attempts"]) + 1
-        delay = min(300, 2 ** min(attempts, 8))
-        with self.conn:
-            self.conn.execute("""UPDATE alerts SET attempts=?,next_retry=?,last_error=?
-                WHERE id=?""", (attempts, time.time() + delay, safe_text(error), alert_id))
-
     def update_storage_health(self) -> dict:
         size = sum(p.stat().st_size for p in (self.path, Path(str(self.path) + "-wal")) if p.exists())
         free = shutil.disk_usage(self.path.parent).free
