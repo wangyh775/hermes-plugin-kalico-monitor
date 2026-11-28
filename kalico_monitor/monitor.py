@@ -199,7 +199,8 @@ class Monitor:
             if self.reporter.evaluate(current, processor.status, time.time(), connected=connected):
                 LOG.info("periodic progress report queued")
             if self.rule_engine.evaluate(
-                processor.status, time.time(), connected=connected,
+                processor.status, time.time(),
+                connected=connected and current.get("klippy_state") == "ready",
                 generation=current.get("generation", 0),
                 filename=current.get("filename", ""),
             ):

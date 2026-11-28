@@ -170,3 +170,38 @@ def test_custom_mode_inherits_rule_unless_explicit_event_override(tmp_path):
             "params"]["objects"]["temperature_sensor chamber"] is None
     finally:
         db.close()
+
+
+def test_threshold_edit_restarts_observation_window(tmp_path):
+    from dataclasses import replace
+    rules = load_extensions(make_cfg(tmp_path))[1]
+    db = Outbox(tmp_path / "restart.sqlite", "PEEK")
+    try:
+        hot = {"temperature_sensor chamber": {"temperature": 180}}
+        a = RuleEngine(db, rules)
+        assert a.evaluate(hot, 100) == 0
+        new_rule = replace(rules[0], threshold=160)
+        b = RuleEngine(db, (new_rule,))
+        assert b.evaluate(hot, 109) == 0
+        assert b.evaluate(hot, 119) == 1
+    finally:
+        db.close()
+
+
+def test_subscription_fallback_preserves_base_monitoring(tmp_path):
+    rules = load_extensions(make_cfg(tmp_path))[1]
+    cfg = Settings(printer="PEEK", moonraker_url="http://localhost:7125",
+                   moonraker_api_key="", hermes_url="http://localhost:8644/webhooks/alert",
+                   hermes_secret="secret", sqlite_path=tmp_path / "sub.sqlite",
+                   disconnect_seconds=25, stall_minutes=0, event_rules=rules,
+                   watch_nozzle_force=True)
+    db = Outbox(cfg.sqlite_path, cfg.printer)
+    try:
+        subs = Monitor(cfg, db)._subscriptions(("temperature_sensor chamber",))
+        first = subs[0]["params"]["objects"]
+        assert "temperature_sensor chamber" in first
+        assert first["filament_force"] == ["events"]
+        assert "nozzle_force_monitor" not in first
+        assert subs[-1]["params"]["objects"] == subscribe_request(False)["params"]["objects"]
+    finally:
+        db.close()

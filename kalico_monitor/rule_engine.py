@@ -59,6 +59,13 @@ class RuleEngine:
             previous = self.tracker.get(rule.name, {})
             previous = previous if isinstance(previous, dict) else {}
             state = dict(previous)
+            signature = (rule.object, rule.field, rule.condition, rule.threshold,
+                         rule.duration, rule.cooldown)
+            if state.get("signature") != list(signature):
+                # Configuration changes require a new continuous observation window.
+                state = {"sequence":state.get("sequence", 0),
+                         "signature":list(signature), "since":None,
+                         "fired":False, "last":None}
             value = numeric_field(status, rule.object, rule.field) if connected else None
             active = value is not None and matched(value, rule.condition, rule.threshold)
             since = state.get("since")
