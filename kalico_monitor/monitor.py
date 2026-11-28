@@ -145,14 +145,15 @@ class Monitor:
             for alert in alerts:
                 LOG.warning("queued %s %s", alert.kind, alert.detail)
 
-    def _record(self, processor: EventProcessor, current: dict, alerts: list[Alert]) -> None:
+    def _record(self, processor: EventProcessor, current: dict, alerts: list[Alert],
+                source_method=None) -> None:
         """Persist lifecycle events even when a force alarm also caused PAUSE.
 
         A force alarm and a print-state transition answer different questions:
         suppressing the latter made real pause callbacks disappear.
         """
         if self.subscription_active and self.filament_tracker is not None:
-            self.filament_tracker.observe(processor.status, current)
+            self.filament_tracker.observe(processor.status, current, source_method=source_method)
         self._save(current, alerts)
 
     def _heartbeat(self) -> None:
@@ -530,7 +531,7 @@ class Monitor:
                     if current is not None:
                         if method == "notify_status_update":
                             self.last_status_received_at = time.monotonic()
-                        self._record(processor, current, alerts)
+                        self._record(processor, current, alerts, source_method=method)
                         hooks = processor.status.get("webhooks", {})
                         if hooks.get("state") == "ready":
                             self._klippy_recovered(method)

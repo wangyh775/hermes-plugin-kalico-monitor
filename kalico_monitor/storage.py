@@ -195,6 +195,11 @@ class Outbox:
 
     def allow_notification(self, alert_id: str, route: str, kind: str, seconds: float) -> bool:
         """Reserve a rate-limit slot durably; retries of the same item keep their slot."""
+        attempt = self.conn.execute(
+            "SELECT attempts FROM alert_routes WHERE alert_id=? AND route=?",
+            (alert_id, route)).fetchone()
+        if attempt is not None and attempt["attempts"] > 0:
+            return True
         key = f"notify_limit:{route}:{kind}"
         previous = self.get_meta(key, {})
         now = time.time()

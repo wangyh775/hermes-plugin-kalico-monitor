@@ -281,6 +281,9 @@ def test_informational_rate_limit_is_route_specific_and_preserves_records(tmp_pa
         assert db.allow_notification(first, "direct", "notify_gcode_response", 10)
         assert not db.allow_notification(second, "direct", "notify_gcode_response", 10)
         assert db.allow_notification(second, "agent", "notify_gcode_response", 10)
+        db.route_failed(first, "direct", "temporary failure")
+        db.set_meta("notify_limit:direct:notify_gcode_response", {"id": second, "at": 0})
+        assert db.allow_notification(first, "direct", "notify_gcode_response", 10)
         db.route_suppressed(second, "direct", "rate limit")
         assert db.conn.execute("SELECT COUNT(*) FROM alerts").fetchone()[0] == 2
     finally:

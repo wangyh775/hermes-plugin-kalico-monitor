@@ -80,7 +80,7 @@ class FilamentEventTracker:
     def __init__(self, store: Outbox):
         self.store = store
 
-    def observe(self, status: dict, state: dict) -> int:
+    def observe(self, status: dict, state: dict, *, source_method=None) -> int:
         obj = status.get(OBJECT)
         events = obj.get("events") if isinstance(obj, dict) else None
         if not isinstance(events, list):
@@ -98,6 +98,6 @@ class FilamentEventTracker:
             alert = Alert(kind="filament_" + kind, generation=generation,
                           filename=filename, detail=detail(event),
                           severity=EVENTS[kind][1], source_id=event["event_id"],
-                          payload=event, trigger="extension_journal")
+                          payload=event, trigger="extension_journal", source_method=source_method)
             count += int(self.store.enqueue_source(alert))
         return count
