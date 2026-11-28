@@ -16,9 +16,13 @@ class Alert:
     detail: str
     severity: str
     sequence: int | None = None
+    source_id: str | None = None
+    payload: dict | None = None
 
     @property
     def id_key(self) -> str:
+        if self.source_id is not None:
+            return f"{self.kind}:{self.source_id}"
         base = f"{self.kind}:{self.generation}:{self.filename}"
         return base if self.sequence is None else f"{base}:{self.sequence}"
 

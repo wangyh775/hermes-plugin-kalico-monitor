@@ -58,3 +58,11 @@ Kalico -> Moonraker 状态订阅 -> Monitor 事件识别
 只有 Hermes Webhook 返回 `delivered` 或 `duplicate` 才认为投递成功；网络恢复可能补发历史报告。报告进度按文件位置估算，不代表成型质量。
 
 目前尚无通用 `events.yaml`、每事件独立开关/等级/渠道/冷却规则、首层 Z 修正独立事件、多打印机聚合或 AI 自动控制。这些属于未来功能，不能把规划配置当作已实现功能。
+
+## filament_force 事件（新插件）
+
+开启已有的 KALICO_WATCH_NOZZLE_FORCE=1（可由 monitor.cfg 的 watch_nozzle_force 配置），Monitor 优先同时订阅 nozzle_force_monitor 与 filament_force.events，兼容仅存在其一或均不存在的设备。不会发送 G-code。
+
+支持 filament_jam_detected、filament_runout_detected、filament_diagnosis_result、filament_jam_confirmed、filament_z_adjusted、filament_recovery_started、filament_recovery_verified、filament_recovery_failed。各事件可配置 direct/agent/both/off；普通 paused/resumed 等生命周期事件仍独立发送。源事件 ID 由 Klippy boot_id 与序号组成，SQLite 去重，完整传输 payload 保存到 alerts.payload 并通过签名 Webhook JSON 的 event 字段发送；直接通知模板仍使用简短 detail，代理路由可使用 event 数据（需对应 Hermes 模板）。堵头窗口为保峰降采样，不是全速原始 ADC 文件。
+
+Klippy 仅保存最近 16 条内存事件；断线过久或 Klippy 重启可能丢失未接收事件。Monitor 收到后持久化。协议见 [filament_force 事件文档](https://github.com/wangyh775/klipper-filament-force/blob/feature/diagnostic-recovery-fsm/docs/events.md)。

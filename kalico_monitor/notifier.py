@@ -13,7 +13,7 @@ import aiohttp
 def make_request(alert: dict, secret: str, printer: str, timestamp: int | None = None, route: str = "direct") -> tuple[bytes, dict[str, str]]:
     if timestamp is None:
         timestamp = int(time.time())
-    body = json.dumps({
+    payload = {
         "printer": printer,
         "kind": alert["kind"],
         "severity": alert["severity"],
@@ -21,7 +21,10 @@ def make_request(alert: dict, secret: str, printer: str, timestamp: int | None =
         "detail": alert["detail"],
         "occurred_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(alert["created"])),
         "alert_id": alert["id"],
-    }, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    }
+    if alert.get("payload"):
+        payload["event"] = json.loads(alert["payload"])
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
     signature = hmac.new(secret.encode("utf-8"), str(timestamp).encode() + b"." + body,
                          hashlib.sha256).hexdigest()
     return body, {

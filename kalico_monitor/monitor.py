@@ -14,6 +14,8 @@ import aiohttp
 
 from .config import Settings
 from .events import Alert, EventProcessor
+from .filament_events import OBJECT as FILAMENT_OBJECT
+from .filament_events import FilamentEventTracker
 from .force import OBJECT as FORCE_OBJECT
 from .force import ForceEventTracker
 from .notifier import deliver
@@ -26,11 +28,15 @@ SUBSCRIBE = {"jsonrpc": "2.0", "method": "printer.objects.subscribe",
              "params": {"objects": {"print_stats": None, "webhooks": None,
                                     "virtual_sdcard": None, "extruder": None,
                                     "heater_bed": None}}, "id": 1}
-def subscribe_request(include_force: bool = False) -> dict:
+def subscribe_request(include_force: bool = False, *, filament_only: bool = False,
+                      legacy_only: bool = False) -> dict:
     """Optional objects are opt-in; use base subscription on unsupported Klippy."""
     objects = dict(SUBSCRIBE["params"]["objects"])
     if include_force:
-        objects[FORCE_OBJECT] = None
+        if not filament_only:
+            objects[FORCE_OBJECT] = None
+        if not legacy_only:
+            objects[FILAMENT_OBJECT] = ["events"]
     return {**SUBSCRIBE, "params": {"objects": objects}}
 
 
@@ -48,6 +54,7 @@ class Monitor:
         self.last_status_received_at: float | None = None
         self.reporter = PeriodicReporter(store, settings.progress_report_minutes)
         self.force_tracker = ForceEventTracker(store) if settings.watch_nozzle_force else None
+        self.filament_tracker = FilamentEventTracker(store) if settings.watch_nozzle_force else None
         self.last_stored_state = store.get_state()
         self.klippy_down_since: float | None = None
         self.klippy_down_alerted = False
@@ -78,6 +85,8 @@ class Monitor:
         """
         if self.force_tracker is not None:
             self.force_tracker.observe(processor.status, current)
+        if self.filament_tracker is not None:
+            self.filament_tracker.observe(processor.status, current)
         self._save(current, alerts)
 
     def _heartbeat(self) -> None:
@@ -197,6 +206,7 @@ class Monitor:
                                       heartbeat=20) as ws:
             LOG.info("Moonraker connected; subscribing to status")
             include_force = self.settings.watch_nozzle_force
+            force_variant = 0
             await ws.send_json(subscribe_request(include_force))
             requested_at = time.monotonic()
             while True:
@@ -224,11 +234,13 @@ class Monitor:
                     # A subscription reply is the complete initial snapshot.
                     if "error" in packet:
                         if include_force:
-                            LOG.warning("Optional nozzle_force_monitor subscribe rejected; "
-                                        "falling back to base status subscription")
-                            include_force = False
+                            force_variant += 1
+                            include_force = force_variant < 3
                             requested_at = time.monotonic()
-                            await ws.send_json(subscribe_request(False))
+                            LOG.warning("Optional force subscription rejected; trying variant %s", force_variant)
+                            await ws.send_json(subscribe_request(include_force,
+                                filament_only=force_variant == 1,
+                                legacy_only=force_variant == 2))
                             continue
                         raise RuntimeError("Moonraker subscription rejected")
                     result = packet.get("result", {})
@@ -276,6 +288,7 @@ class Monitor:
                     self.last_status_received_at = None
                     self._klippy_recovered()
                     include_force = self.settings.watch_nozzle_force
+                    force_variant = 0
                     requested_at = time.monotonic()
                     await ws.send_json(subscribe_request(include_force))
                 else:
