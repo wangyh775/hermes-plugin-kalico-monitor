@@ -106,7 +106,7 @@ class FilamentEventTracker:
             if seq > last + 1 and boot in cursor:
                 gap = Alert("event_gap_detected", 0, "", f"filament_force {boot}: {last+1}..{seq-1} missing",
                             "warning", source_id=f"{boot}:{last+1}:{seq-1}",
-                            payload={"boot_id": boot, "missing_from": last+1, "missing_to": seq-1"},
+                            payload={"boot_id": boot, "missing_from": last+1, "missing_to": seq-1},
                             trigger="extension_journal_gap")
             kind = event["kind"]
             filename = event.get("filename") or state.get("filename", "")

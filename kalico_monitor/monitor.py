@@ -142,7 +142,7 @@ class Monitor:
         previous = self.last_stored_state
         important = (previous is None or
                      any(current.get(k) != previous.get(k) for k in
-                         ("state", "klippy_state", "generation", "filename", "stops")))
+                         ("state", "klippy_state", "generation", "filename", "stops", "job_identity")))
         # Avoid writing an SD/eMMC card every progress notification.
         if alerts or important or time.monotonic() - self.last_store_at >= 15:
             incident = None
@@ -294,6 +294,7 @@ class Monitor:
         self.ws_offline_since = None
         self.ws_offline_notified = False
         state, alerts = processor.set_snapshot(snapshot, time.monotonic(), allow_stall=False)
+        processor.status.pop('_monitor_job', None)
         eventtime = source_eventtime if type(source_eventtime) in (int, float) and abs(source_eventtime) < 1e15 else None
         self._record(processor, state, alerts, source_method=source_method,
                      source_eventtime=eventtime, received_at=received_at)
@@ -533,7 +534,7 @@ class Monitor:
                         raise RuntimeError("Moonraker subscription missing core objects")
                     pending = False
                     last_refresh = time.monotonic()
-                    if not self.subscription_active and snapshot['print_stats'].get('state') in ('printing', 'paused'):
+                    if snapshot['print_stats'].get('state') in ('printing', 'paused'):
                         identity = await self._active_job(session, headers, snapshot['print_stats'].get('filename'))
                         if identity:
                             snapshot = {**snapshot, '_monitor_job': {'identity': identity}}

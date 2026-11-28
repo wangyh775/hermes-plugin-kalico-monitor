@@ -94,10 +94,10 @@ def compare(previous: dict | None, sample: dict, now: float, stall_minutes: int 
     identity = sample.get("job_identity")
     old_identity = previous.get("job_identity")
     identity_changed = bool(identity and old_identity and identity != old_identity)
-    new_job = new_print == "printing" and (reset or identity_changed or
+    new_job = new_print in ("printing", "paused") and (identity_changed or (new_print == "printing" and (reset or
         old_print in ("", "standby", "complete", "error", "cancelled")
         or (bool(sample["filename"]) and sample["filename"] != old_filename)
-    )
+    )))
     if new_job:
         generation += 1
     notified = set(previous.get("notified", []))
