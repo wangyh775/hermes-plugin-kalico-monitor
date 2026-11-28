@@ -5,12 +5,12 @@ continuous valid observation window; only a valid normal reading rearms the rule
 """
 from __future__ import annotations
 
-import math
 import time
 from typing import Any
 
 from .custom_config import EventRule, Reliability
 from .events import Alert
+from .status_fields import number
 from .storage import Outbox
 
 META_KEY = "custom_event_rules_v1"
@@ -22,13 +22,7 @@ def numeric_field(status: dict, obj: str, dotted: str) -> float | None:
         if not isinstance(value, dict):
             return None
         value = value.get(part)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    try:
-        number = float(value)
-    except (ValueError, OverflowError):
-        return None
-    return number if math.isfinite(number) else None
+    return number(value)
 
 
 def matched(value: float, condition: str, threshold: float) -> bool:

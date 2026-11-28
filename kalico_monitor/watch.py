@@ -5,20 +5,12 @@ See LICENSE and NOTICE.md. No network I/O occurs in this module.
 """
 from __future__ import annotations
 
-import math
 from typing import Any
 
+from .status_fields import number as as_number
+from .status_fields import status_object
+
 STOPPED = {"shutdown", "error"}
-
-
-def as_number(value: Any) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    try:
-        number = float(value)
-    except OverflowError:
-        return None
-    return number if math.isfinite(number) else None
 
 
 def _safe_text(value: Any) -> str:
@@ -26,12 +18,9 @@ def _safe_text(value: Any) -> str:
 
 
 def sample_from_status(status: dict) -> dict:
-    stats = status.get("print_stats", {})
-    virtual = status.get("virtual_sdcard", {})
-    hooks = status.get("webhooks", {})
-    stats = stats if isinstance(stats, dict) else {}
-    virtual = virtual if isinstance(virtual, dict) else {}
-    hooks = hooks if isinstance(hooks, dict) else {}
+    stats = status_object(status, "print_stats")
+    virtual = status_object(status, "virtual_sdcard")
+    hooks = status_object(status, "webhooks")
     return {
         "filename": _safe_text(stats.get("filename")),
         "state": stats.get("state") if isinstance(stats.get("state"), str) else "",

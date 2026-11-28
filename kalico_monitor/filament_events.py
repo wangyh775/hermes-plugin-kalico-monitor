@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 from typing import Any
 
 from .event_registry import BUILTINS
 from .events import Alert
+from .status_fields import number as finite
 from .storage import Outbox
 
 OBJECT = "filament_force"
@@ -15,16 +15,6 @@ EVENTS = {
     kind.removeprefix("filament_"): (entry.description, entry.severity)
     for kind, entry in BUILTINS.items() if entry.source_type == "klipper_extension"
 }
-
-
-def finite(value: Any) -> float | None:
-    if type(value) not in (int, float):
-        return None
-    try:
-        result = float(value)
-        return result if math.isfinite(result) else None
-    except OverflowError:
-        return None
 
 
 def valid_event(event: Any) -> bool:

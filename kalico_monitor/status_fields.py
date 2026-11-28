@@ -61,3 +61,19 @@ def remaining_time(stats: dict, sdcard: dict) -> str:
     if seconds < 0 or not math.isfinite(seconds):
         return "—（数据异常）"
     return f"{duration(seconds)}（按文件进度粗略估算）"
+
+
+def status_object(status: dict, key: str) -> dict:
+    value = status.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def chamber_status(status: dict) -> dict:
+    name = status.get("_kalico_chamber_object")
+    if isinstance(name, str) and name:
+        return status_object(status, name)
+    return status_object(status, "heater_generic chamber") or status_object(status, "temperature_sensor chamber")
+
+
+def temperature_values(obj: dict) -> tuple[float | None, float | None]:
+    return number(obj.get("temperature")), number(obj.get("target"))
