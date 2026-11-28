@@ -103,3 +103,76 @@ async def test_missing_agent_endpoint_does_not_block_direct_notification(
         assert states["agent"]["attempts"] >= 1
     finally:
         db.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_wait_does_not_block_later_critical_direct(tmp_path, monkeypatch):
+    import kalico_monitor.monitor as module
+    settings = Settings(printer="PEEK", moonraker_url="http://localhost:7125",
+                        moonraker_api_key="", hermes_url="http://localhost:8644/direct",
+                        hermes_agent_url="http://localhost:8644/agent", hermes_secret="secret",
+                        sqlite_path=tmp_path / "db", disconnect_seconds=25, stall_minutes=0,
+                        event_modes="started=agent")
+    store = Outbox(settings.sqlite_path, settings.printer)
+    agent_waiting, direct_done, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def fake_deliver(_session, _url, _secret, _printer, _item, route="direct"):
+        if route == "agent":
+            agent_waiting.set()
+            await release.wait()
+        else:
+            direct_done.set()
+
+    monkeypatch.setattr(module, "deliver", fake_deliver)
+    store.enqueue(Alert("started", 1, "", "start", "info"))
+    task = asyncio.create_task(module.Monitor(settings, store)._dispatch(None))
+    try:
+        await asyncio.wait_for(agent_waiting.wait(), 2)
+        store.enqueue(Alert("klippy_shutdown", 1, "", "fault", "critical"))
+        await asyncio.wait_for(direct_done.wait(), 2)
+        assert not release.is_set()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_worker_failure_cancels_siblings(tmp_path):
+    from kalico_monitor.monitor import Monitor
+    settings = Settings(printer="PEEK", moonraker_url="http://localhost:7125",
+                        moonraker_api_key="", hermes_url="http://localhost:8644/direct",
+                        hermes_secret="secret", sqlite_path=tmp_path / "db",
+                        disconnect_seconds=25, stall_minutes=0)
+    store = Outbox(settings.sqlite_path, settings.printer)
+    stopped = asyncio.Event()
+
+    async def blocked():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
+    async def broken():
+        await asyncio.sleep(0)
+        raise RuntimeError("worker failed")
+
+    try:
+        with pytest.raises(RuntimeError, match="worker failed"):
+            await Monitor(settings, store)._supervise(blocked(), broken())
+        assert stopped.is_set()
+    finally:
+        store.close()
+
+
+def test_pending_priority_and_route_filter(tmp_path):
+    db = Outbox(tmp_path / "db", "PEEK")
+    try:
+        info = db.enqueue(Alert("started", 1, "", "start", "info"))
+        critical = db.enqueue(Alert("klippy_shutdown", 1, "", "fault", "critical"))
+        db.ensure_routes(info, ("direct", "agent"))
+        db.ensure_routes(critical, ("direct",))
+        assert [x["id"] for x in db.pending_routes(route="direct")] == [critical, info]
+        assert [x["id"] for x in db.pending_routes(route="agent")] == [info]
+    finally:
+        db.close()

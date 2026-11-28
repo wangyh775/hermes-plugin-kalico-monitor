@@ -109,35 +109,63 @@ class Monitor:
         self.store.enqueue(event)
         LOG.warning("queued %s %s", kind, detail)
 
-    async def _dispatch(self, session: aiohttp.ClientSession):
+    async def _supervise(self, *coroutines):
+        """Unexpected completion or error stops siblings and fails the daemon.
+
+        Python 3.10 compatible; systemd restarts the service. No silent dead worker.
+        """
+        tasks = [asyncio.create_task(coro) for coro in coroutines]
+        try:
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                task.result()
+            raise RuntimeError("Monitor worker exited unexpectedly")
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _route_pending(self):
         while True:
             for item in self.store.unrouted(limit=30):
                 routes = routes_for(item["kind"], self.event_modes)
-                # Persist both tasks even when the analysis endpoint is absent.
-                # The direct alert must never depend on Agent configuration.
                 self.store.ensure_routes(item["id"], routes)
                 if not routes:
                     LOG.info("notification suppressed: kind=%s id=%s", item["kind"], item["id"])
-            for item in self.store.pending_routes(limit=12):
-                route = item["route"]
-                url = self.settings.hermes_agent_url if route == "agent" else self.settings.hermes_url
-                if not url:
-                    self.store.route_failed(item["id"], route, "Webhook route is not configured")
-                    LOG.warning("notification %s route is not configured: %s", route, item["id"])
-                    continue
-                try:
-                    await deliver(session, url, self.settings.hermes_secret,
-                                  self.settings.printer, item, route=route)
-                except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
-                    self.store.route_failed(item["id"], route,
-                                            type(exc).__name__ + ": " + str(exc)[:100])
-                    LOG.warning("notification retry scheduled: kind=%s id=%s route=%s cause=%s",
+            await asyncio.sleep(0.25)
+
+    async def _deliver_route(self, session: aiohttp.ClientSession, route: str):
+        url = self.settings.hermes_agent_url if route == "agent" else self.settings.hermes_url
+        while True:
+            # Re-select after every request so a newly queued critical event
+            # does not wait behind a previously selected batch of info events.
+            items = self.store.pending_routes(limit=1, route=route)
+            if not items:
+                await asyncio.sleep(0.25)
+                continue
+            item = items[0]
+            if not url:
+                self.store.route_failed(item["id"], route, "Webhook route is not configured")
+                LOG.warning("notification %s route is not configured: %s", route, item["id"])
+                await asyncio.sleep(0)
+                continue
+            try:
+                await deliver(session, url, self.settings.hermes_secret,
+                              self.settings.printer, item, route=route)
+            except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
+                self.store.route_failed(item["id"], route, type(exc).__name__ + ": " + str(exc)[:100])
+                LOG.warning("notification retry scheduled: kind=%s id=%s route=%s cause=%s",
                             item["kind"], item["id"], route, type(exc).__name__)
-                else:
-                    self.store.route_delivered(item["id"], route)
-                    LOG.info("notification accepted: kind=%s id=%s route=%s",
+            else:
+                self.store.route_delivered(item["id"], route)
+                LOG.info("notification %s: kind=%s id=%s route=%s",
+                         "accepted" if route == "agent" else "delivered",
                          item["kind"], item["id"], route)
-            await asyncio.sleep(2)
+            await asyncio.sleep(0)
+
+    async def _dispatch(self, session: aiohttp.ClientSession):
+        await self._supervise(self._route_pending(), self._deliver_route(session, "direct"),
+                              self._deliver_route(session, "agent"))
 
     def _process_snapshot(self, processor: EventProcessor, snapshot: dict):
         self._heartbeat()
@@ -307,38 +335,33 @@ class Monitor:
                             self._klippy_disconnected()
                 self._tick(processor)
 
+    async def _listen_forever(self, session: aiohttp.ClientSession):
+        while True:
+            try:
+                await self._listen(session)
+            except asyncio.CancelledError:
+                raise
+            except (aiohttp.ClientError, OSError, TimeoutError,
+                    ConnectionError, RuntimeError) as exc:
+                self.reporter.suspend()
+                self.last_status_received_at = None
+                LOG.warning("Moonraker WebSocket problem: %s", type(exc).__name__)
+                if self.ws_offline_since is None:
+                    self.ws_offline_since = time.monotonic()
+                if (not self.ws_offline_notified and
+                        time.monotonic() - self.ws_offline_since >= self.settings.disconnect_seconds):
+                    self.ws_offline_id = self._new_incident("moonraker_incidents")
+                    self._system_alert("moonraker_unreachable", self.ws_offline_id,
+                                       "Moonraker WebSocket is unavailable")
+                    self.ws_offline_notified = True
+                await asyncio.sleep(3)
+            else:
+                await asyncio.sleep(3)
+
     async def run(self):
         headers = {"User-Agent": "hermes-plugin-kalico-monitor/0.3"}
         async with aiohttp.ClientSession(headers=headers, trust_env=False) as session:
-            sender = asyncio.create_task(self._dispatch(session))
-            try:
-                while True:
-                    try:
-                        await self._listen(session)
-                    except asyncio.CancelledError:
-                        raise
-                    except (aiohttp.ClientError, OSError, TimeoutError,
-                            ConnectionError, RuntimeError) as exc:
-                        self.reporter.suspend()
-                        self.last_status_received_at = None
-                        LOG.warning("Moonraker WebSocket problem: %s", type(exc).__name__)
-                        if self.ws_offline_since is None:
-                            self.ws_offline_since = time.monotonic()
-                        if (not self.ws_offline_notified and
-                                time.monotonic() - self.ws_offline_since >= self.settings.disconnect_seconds):
-                            self.ws_offline_id = self._new_incident("moonraker_incidents")
-                            self._system_alert("moonraker_unreachable", self.ws_offline_id,
-                                               "Moonraker WebSocket is unavailable")
-                            self.ws_offline_notified = True
-                        await asyncio.sleep(3)
-                    else:
-                        await asyncio.sleep(3)
-            finally:
-                sender.cancel()
-                try:
-                    await sender
-                except asyncio.CancelledError:
-                    pass
+            await self._supervise(self._dispatch(session), self._listen_forever(session))
 
 
 def main():
