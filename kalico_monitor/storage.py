@@ -147,6 +147,7 @@ class Outbox:
     def enrich_alert(self, alert_id: str, detail: str) -> None:
         detail = detail.encode("utf-8", "replace").decode("utf-8")[:1500]
         with self.conn:
+            self._set_meta(f"shutdown_detail:{alert_id}", detail)
             self.conn.execute("""UPDATE alerts SET detail=? WHERE id=? AND delivered IS NULL
                 AND NOT EXISTS (SELECT 1 FROM alert_routes WHERE alert_id=?)""",
                 (detail, alert_id, alert_id))
@@ -321,6 +322,16 @@ class Outbox:
         with self.conn:
             self.conn.execute("""UPDATE alerts SET attempts=?,next_retry=?,last_error=?
                 WHERE id=?""", (attempts, time.time() + delay, error[:240], alert_id))
+
+    def archive_info(self, before: float, limit: int = 500) -> int:
+        """Compact terminal G-code records only; keep IDs and route audit."""
+        with self.conn:
+            rows = self.conn.execute('''SELECT id FROM alerts WHERE kind='notify_gcode_response'
+                AND severity='info' AND created<? AND (delivered IS NOT NULL OR suppressed IS NOT NULL)
+                AND payload IS NOT NULL LIMIT ?''', (before, limit)).fetchall()
+            self.conn.executemany("UPDATE alerts SET payload=NULL,detail='Archived informational G-code' WHERE id=?",
+                                  [(row['id'],) for row in rows])
+            return len(rows)
 
     def summary(self) -> dict:
         counts = self.conn.execute("""SELECT

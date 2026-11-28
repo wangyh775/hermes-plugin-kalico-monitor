@@ -171,6 +171,14 @@ def read_monitor(path: Path, limit: int = 5) -> dict:
                              conn.execute("PRAGMA table_info(alerts)"))
         active = "delivered IS NULL AND suppressed IS NULL" if has_suppressed else "delivered IS NULL"
         count = conn.execute(f"SELECT COUNT(*) FROM alerts WHERE {active}").fetchone()[0]
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        health["dead_letters"] = conn.execute("SELECT COUNT(*) FROM dead_letters").fetchone()[0] if "dead_letters" in tables else 0
+        if "alert_routes" in tables:
+            health["routes"] = {row["route"]: dict(row) for row in conn.execute("""SELECT route,COUNT(*) AS pending,
+                MIN(a.created) AS oldest, MAX(r.attempts) AS max_attempts
+                FROM alert_routes r JOIN alerts a ON a.id=r.alert_id
+                WHERE r.delivered IS NULL AND r.suppressed IS NULL GROUP BY route""")}
+        health["db_bytes"] = sum(p.stat().st_size for p in (path, Path(str(path)+"-wal")) if p.exists())
         select_suppressed = "suppressed" if has_suppressed else "NULL AS suppressed"
         rows = conn.execute(
             "SELECT kind,severity,filename,detail,created,delivered, "
@@ -213,6 +221,10 @@ def format_health(data: dict, printer: str = "Kalico", now: float | None = None)
     transport = health.get("transport_connected")
     transport_text = "已连接" if transport is True else "断开" if transport is False else "未知"
     lines = [f"Moonraker 连接：{transport_text}", f"订阅：{subscription.get('state', 'unknown')}"]
+    lines.append(f"隔离事件/路由：{health.get('dead_letters', 0)}")
+    lines.append(f"SQLite 大小：{health.get('db_bytes', 0)/1048576:.1f} MiB")
+    for route, info in health.get("routes", {}).items():
+        lines.append(f"{route} 待发：{info['pending']}，最大重试：{info['max_attempts']}")
     if health.get("native_oversize_count"):
         lines.append(f"原生超限载荷：{health['native_oversize_count']} 条")
     if subscription.get("missing"):

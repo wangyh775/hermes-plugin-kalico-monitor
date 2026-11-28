@@ -8,7 +8,10 @@ import argparse
 import asyncio
 import json
 import logging
+import math
+import uuid
 import time
+from dataclasses import replace
 
 import aiohttp
 
@@ -18,7 +21,8 @@ from .filament_events import OBJECT as FILAMENT_OBJECT
 from .filament_events import FilamentEventTracker
 from .handlers import agent_url
 from .native_events import NativeEventAdapter
-from .notifier import deliver
+from .notifier import PermanentPayloadError, deliver
+from .event_registry import REGISTRY
 from .policy import parse_modes, routes_for, validate_modes
 from .reports import PeriodicReporter
 from .rule_engine import RuleEngine, numeric_field
@@ -77,6 +81,7 @@ class Monitor:
         self.shutdown_query_since: float | None = None
         self.disconnect_method: str | None = None
         self.subscription_active = False
+        self.clock_id = uuid.uuid4().hex
         self.field_seen: dict[tuple[str, str], float] = {}
         for prefix in ("klippy", "moonraker"):
             incident = store.get_meta(f"{prefix}_open_incident", {})
@@ -87,6 +92,7 @@ class Monitor:
                 else:
                     self.ws_offline_notified = True
                     self.ws_offline_id = incident["id"]
+        self.ws_offline_since = time.monotonic()
         self._invalidate_subscription("starting")
         self.store.set_meta("transport_connected", False)
 
@@ -139,7 +145,14 @@ class Monitor:
                          ("state", "klippy_state", "generation", "filename", "stops")))
         # Avoid writing an SD/eMMC card every progress notification.
         if alerts or important or time.monotonic() - self.last_store_at >= 15:
-            self.store.transition(current, alerts)
+            incident = None
+            for index, alert in enumerate(alerts):
+                if alert.kind == 'klippy_shutdown':
+                    key = f'klippy_shutdown:{alert.generation}'
+                    alerts[index] = alert = replace(alert, payload={**(alert.payload or {}),
+                        'incident_id': alert.generation, 'incident_key': key})
+                    incident = {'id': alert.generation, 'alert_id': self.store.alert_id(alert), 'key': key}
+            self.store.transition(current, alerts, incident)
             self.last_stored_state = dict(current)
             self.last_store_at = time.monotonic()
             for alert in alerts:
@@ -152,6 +165,10 @@ class Monitor:
         A force alarm and a print-state transition answer different questions:
         suppressing the latter made real pause callbacks disappear.
         """
+        if received_at is not None:
+            alerts[:] = [replace(alert, received_at=received_at, source_eventtime=source_eventtime,
+                                 source_clock_id=self.clock_id if source_eventtime is not None else None)
+                         for alert in alerts]
         if self.subscription_active and self.filament_tracker is not None:
             self.filament_tracker.observe(processor.status, current, source_method=source_method)
         self._save(current, alerts)
@@ -171,7 +188,8 @@ class Monitor:
                       trigger: str | None = None):
         event = Alert(kind=kind, generation=generation, filename="", detail=detail,
                       severity=severity, source_method=source_method, trigger=trigger,
-                       payload={"incident_id": generation})
+                       payload={"incident_id": generation, "incident_key":
+                                 f"{'moonraker' if kind.startswith('moonraker_') else 'klippy'}:{generation}"})
         incident_keys = {
             "klippy_disconnected": ("klippy", True),
             "klippy_recovered": ("klippy", False),
@@ -221,8 +239,9 @@ class Monitor:
                 if item["kind"] == "print_progress" and time.time() - item["created"] > 1800:
                     self.store.route_suppressed(item["id"], route, "stale progress report")
                     continue
-                if item["kind"] == "notify_gcode_response" and item["severity"] == "info":
-                    if not self.store.allow_notification(item["id"], route, item["kind"], 10):
+                entry = REGISTRY.get(item["kind"])
+                if entry and entry.notification_interval and item["severity"] == "info":
+                    if not self.store.allow_notification(item["id"], route, item["kind"], entry.notification_interval):
                         self.store.route_suppressed(item["id"], route, "informational G-code rate limit")
                         continue
                 url = self.settings.hermes_agent_url if route == "agent" else self.settings.hermes_url
@@ -244,6 +263,9 @@ class Monitor:
                     await deliver(session, url, self.settings.hermes_secret,
                                   self.settings.printer, item, route=route,
                                   message_fields=self.settings.message_fields, **options)
+                except PermanentPayloadError as exc:
+                    self.store.route_dead(item['id'], route, str(exc))
+                    LOG.error('notification quarantined: %s %s', item['id'], route)
                 except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
                     self.store.route_failed(item["id"], route,
                                             type(exc).__name__ + ": " + str(exc)[:100])
@@ -291,6 +313,13 @@ class Monitor:
     def _klippy_recovered(self, source_method=None):
         self.klippy_down_since = None
         self.disconnect_method = None
+        shutdown = self.store.get_meta('shutdown_open_incident', {})
+        if shutdown.get('id'):
+            alert = Alert('klippy_shutdown_recovered', shutdown['id'], '',
+                          'Klippy ready after shutdown', 'info',
+                          payload={'incident_id': shutdown['id'], 'incident_key': shutdown['key']},
+                          source_method=source_method, trigger='state_recovery')
+            self.store.report_checkpoint('shutdown_open_incident', {}, alert)
         if self.klippy_down_alerted:
             self._system_alert("klippy_recovered", self.klippy_down_id,
                                "Moonraker reports Kalico ready again; check before restarting print", "info",
@@ -299,6 +328,13 @@ class Monitor:
 
     def _finish_shutdown(self, processor, hooks=None, cause=None):
         if hooks is None and self.shutdown_query_since is None:
+            return
+        incident = self.store.get_meta("shutdown_open_incident", {})
+        if incident.get("alert_id"):
+            reason = hooks.get("state_message") if hooks else None
+            if isinstance(reason, str) and reason:
+                self.store.enrich_alert(incident["alert_id"], reason)
+            self.shutdown_query_since = None
             return
         if hooks is None:
             hooks = {"state": "shutdown", "state_message":
@@ -395,9 +431,14 @@ class Monitor:
         subscriptions = self._subscriptions(rule_objects)
         async with session.ws_connect(self.settings.ws_url, headers=headers,
                                       heartbeat=20) as ws:
+            self.clock_id = uuid.uuid4().hex
             LOG.info("Moonraker connected; subscribing to status")
             self.store.set_meta("transport_connected", True)
             self._heartbeat()
+            if self.ws_offline_notified:
+                self._system_alert("moonraker_recovered", self.ws_offline_id, "Moonraker transport restored", "info")
+            self.ws_offline_notified = False
+            self.ws_offline_since = None
             subscription_index = 0
             request_id = 1
             pending = True
@@ -405,6 +446,9 @@ class Monitor:
             requested_at = time.monotonic()
             last_refresh = requested_at
             subscription_cause = None
+            query_id = 2
+            query_pending = None
+            self.shutdown_query_since = None
             while True:
                 if not pending and self.shutdown_query_since is None and time.monotonic() - last_refresh >= 30:
                     # Rediscover optional objects after fallback, not just on reconnect.
@@ -436,6 +480,7 @@ class Monitor:
                     continue
                 if not isinstance(packet, dict):
                     continue
+                packet_received_at = time.time()
                 reply_id = packet.get("id")
                 if pending and reply_id == request_id:
                     # A subscription reply is the complete initial snapshot.
@@ -470,7 +515,8 @@ class Monitor:
                     self._process_snapshot(processor, snapshot, subscription_cause)
                     subscription_cause = None
                     continue
-                if reply_id == 2:
+                if query_pending is not None and reply_id == query_pending:
+                    query_pending = None
                     if self.subscription_active or (self.shutdown_query_since is None and self.klippy_down_since is None):
                         continue
                     # A Klippy failure may reject object queries while Moonraker
@@ -503,13 +549,23 @@ class Monitor:
                     pending = False
                     if self.shutdown_query_since is None:
                         self.shutdown_query_since = time.monotonic()
-                    await ws.send_json(QUERY)
+                        self._finish_shutdown(processor, {"state": "shutdown",
+                            "state_message": "Klippy shutdown notification received"},
+                            "notify_klippy_shutdown")
+                        self.shutdown_query_since = time.monotonic()
+                    query_pending = query_id
+                    query_id = -1 if query_id == 2 else query_id - 1
+                    await ws.send_json({**QUERY, "id": query_pending})
                 elif method == "notify_klippy_disconnected":
                     self._invalidate_subscription()
                     pending = False
                     self._klippy_disconnected(method)
-                    await ws.send_json(QUERY)
+                    query_pending = query_id
+                    query_id = -1 if query_id == 2 else query_id - 1
+                    await ws.send_json({**QUERY, 'id': query_pending})
                 elif method == "notify_klippy_ready":
+                    query_pending = None
+                    self.clock_id = uuid.uuid4().hex
                     self._finish_shutdown(processor)
                     self._invalidate_subscription()
                     rule_objects = await self._rule_objects(session, headers)
@@ -531,7 +587,10 @@ class Monitor:
                     if current is not None:
                         if method == "notify_status_update":
                             self.last_status_received_at = time.monotonic()
-                        self._record(processor, current, alerts, source_method=method)
+                        eventtime = params[1] if isinstance(params, list) and len(params) > 1 else None
+                        eventtime = eventtime if type(eventtime) in (int, float) and abs(eventtime) < 1e15 and math.isfinite(eventtime) else None
+                        self._record(processor, current, alerts, source_method=method,
+                                     source_eventtime=eventtime, received_at=packet_received_at)
                         hooks = processor.status.get("webhooks", {})
                         if hooks.get("state") == "ready":
                             self._klippy_recovered(method)
@@ -550,6 +609,7 @@ class Monitor:
                 raise
             except (aiohttp.ClientError, OSError, TimeoutError,
                     ConnectionError, RuntimeError) as exc:
+                self.shutdown_query_since = None
                 self._invalidate_subscription("disconnected")
                 self.store.set_meta("transport_connected", False)
                 LOG.warning("Moonraker WebSocket problem: %s", type(exc).__name__)
@@ -564,10 +624,25 @@ class Monitor:
                 self._heartbeat()
             await asyncio.sleep(3)
 
+    async def _communication_watchdog(self):
+        last_maintenance = time.monotonic()
+        while True:
+            if time.monotonic() - last_maintenance >= 3600:
+                self.store.archive_info(time.time() - 7 * 86400)
+                last_maintenance = time.monotonic()
+            if (self.ws_offline_since is not None and not self.ws_offline_notified
+                    and time.monotonic() - self.ws_offline_since >= self.settings.disconnect_seconds):
+                self.ws_offline_id = self._new_incident("moonraker_incidents")
+                self._system_alert("moonraker_unreachable", self.ws_offline_id, "Moonraker transport unavailable")
+                self.ws_offline_notified = True
+            await asyncio.sleep(0.5)
+
     async def run(self):
         headers = {"User-Agent": "hermes-plugin-kalico-monitor/0.3"}
-        async with aiohttp.ClientSession(headers=headers, trust_env=False) as session:
-            await self._supervise(self._dispatch(session), self._listen_forever(session))
+        async with aiohttp.ClientSession(headers=headers, trust_env=False,
+                                         timeout=aiohttp.ClientTimeout(total=10, connect=5, sock_connect=5)) as session:
+            await self._supervise(self._dispatch(session), self._listen_forever(session),
+                                  self._communication_watchdog())
 
 
 

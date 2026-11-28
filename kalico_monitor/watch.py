@@ -36,6 +36,7 @@ def sample_from_status(status: dict) -> dict:
         "klippy_message": hooks.get("state_message") if isinstance(hooks.get("state_message"), str) else "",
         "file_position": as_number(virtual.get("file_position")),
         "progress": as_number(virtual.get("progress")),
+        "total_duration": as_number(stats.get("total_duration")),
     }
 
 
@@ -53,6 +54,7 @@ def initial_state(sample: dict, now: float) -> dict:
         "file_position": sample["file_position"],
         "progress": sample["progress"],
         "progress_changed_at": now,
+        "total_duration": sample.get("total_duration"),
         "stall_open": False,
     }
 
@@ -81,7 +83,13 @@ def compare(previous: dict | None, sample: dict, now: float, stall_minutes: int 
     new_klippy = sample["klippy_state"]
     stopped = new_klippy in STOPPED
 
-    new_job = new_print == "printing" and (
+    old_duration, duration = previous.get("total_duration"), sample.get("total_duration")
+    reset = (old_print in ("printing", "paused") and old_duration is not None
+             and duration is not None and old_duration - duration > 2
+             and sample.get("file_position") is not None
+             and previous.get("file_position") is not None
+             and sample["file_position"] < previous["file_position"])
+    new_job = new_print == "printing" and (reset or
         old_print in ("", "standby", "complete", "error", "cancelled")
         or (bool(sample["filename"]) and sample["filename"] != old_filename)
     )
@@ -152,6 +160,7 @@ def compare(previous: dict | None, sample: dict, now: float, stall_minutes: int 
         "notified": sorted(notified), "transition_counts": transition_counts,
         "file_position": sample["file_position"],
         "progress": sample["progress"], "progress_changed_at": changed_at,
+        "total_duration": sample.get("total_duration"),
         "stall_open": stall_open,
     })
     return state, events

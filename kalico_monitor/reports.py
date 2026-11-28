@@ -58,6 +58,7 @@ def report_fields(status: dict) -> dict:
         "remaining": remaining_time(stats, sd),
         "nozzle": _temperature(_object(status, "extruder")),
         "bed": _temperature(_object(status, "heater_bed")),
+        "chamber": _temperature(_object(status, "heater_generic chamber") or _object(status, "temperature_sensor chamber")),
         "layer": _number(layer_info.get("current_layer")),
         "total_layers": _number(layer_info.get("total_layer")),
     }
