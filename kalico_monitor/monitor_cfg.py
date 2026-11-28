@@ -19,6 +19,7 @@ MONITOR_OPTIONS = {
     "disconnect_seconds": "KALICO_DISCONNECT_SECONDS",
     "watch_nozzle_force": "KALICO_WATCH_NOZZLE_FORCE",
 }
+HERMES_OPTIONS = {"direct_chat_id": "KALICO_DIRECT_CHAT_ID", "agent_chat_id": "KALICO_AGENT_CHAT_ID"}
 CFG_KEYS = frozenset((*MONITOR_OPTIONS.values(), "KALICO_EVENT_MODES"))
 LIFECYCLE_EVENTS = (
     "started", "paused", "resumed", "complete", "cancelled", "error",
@@ -55,8 +56,8 @@ def read_cfg(path: Path) -> dict[str, str]:
             parser.read_file(stream)
     except (configparser.Error, UnicodeError) as exc:
         raise ValueError(f"Monitor CFG 格式错误：{path}: {exc}") from exc
-    if parser.defaults() or set(parser.sections()) - {"monitor", "events"}:
-        raise ValueError("monitor.cfg 只支持 [monitor] 和 [events]，不支持 [DEFAULT] 或未知节")
+    if parser.defaults() or set(parser.sections()) - {"monitor", "events", "hermes"}:
+        raise ValueError("monitor.cfg 只支持 [monitor]、[events] 和 [hermes]，不支持 [DEFAULT] 或未知节")
 
     from .setup import validate_field  # Deferred to keep the parser import-light.
     values: dict[str, str] = {}
@@ -66,6 +67,11 @@ def read_cfg(path: Path) -> dict[str, str]:
                 raise ValueError(f"未知 [monitor] 配置项：{option}")
             env_key = MONITOR_OPTIONS[option]
             values[env_key] = validate_field(env_key, raw)
+    if parser.has_section("hermes"):
+        for option, raw in parser.items("hermes"):
+            if option not in HERMES_OPTIONS:
+                raise ValueError(f"未知 [hermes] 配置项：{option}")
+            values[HERMES_OPTIONS[option]] = validate_field(HERMES_OPTIONS[option], raw)
     if parser.has_section("events"):
         pairs = []
         for kind, mode in parser.items("events"):
@@ -88,6 +94,9 @@ def render_cfg(values: dict[str, str]) -> str:
     ]
     for option, key in MONITOR_OPTIONS.items():
         lines.append(f"{option}: {validate_field(key, values[key])}")
+    lines.extend(["", "[hermes]"])
+    for option, key in HERMES_OPTIONS.items():
+        lines.append(f"{option}: {validate_field(key, values.get(key, ''))}")
     lines.extend(["", "[events]", "# default applies to unlisted events."])
     raw = values.get("KALICO_EVENT_MODES", "")
     if raw:
@@ -163,6 +172,6 @@ def edit_events(current: str, ask=input, out=print) -> str:
         if not mode:
             continue
         if mode not in EVENT_MODES:
-            out("仅支持 direct、agent、both")
+            out("仅支持 off、direct、agent、both")
             continue
         policies[name] = mode
