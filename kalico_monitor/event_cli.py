@@ -21,10 +21,38 @@ DESCRIPTIONS = {
 
 def main(argv: list[str]) -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("events", "discover"))
+    parser.add_argument("command", choices=("events", "discover", "test"))
+    parser.add_argument("kind", nargs="?")
     parser.add_argument("--file", type=type(default_path()), default=default_path())
     args = parser.parse_args(argv)
     values = read_env(args.file.expanduser())
+    if args.command == "test":
+        if args.kind not in LIFECYCLE_EVENTS:
+            parser.error("test requires a registered event name")
+        import asyncio
+        import time
+        import uuid
+        import aiohttp
+        from .notifier import deliver
+        from .policy import routes_for
+        from .setup import validate_all
+        values = validate_all(values)
+        routes = routes_for(args.kind, parse_modes(values["KALICO_EVENT_MODES"]))
+        if not routes:
+            print("事件已关闭，不发送测试通知")
+            return
+        alert = {"id": "test-" + uuid.uuid4().hex, "kind": args.kind, "severity": "info",
+                 "filename": "TEST", "detail": "模拟通知：非真实打印事件", "created": time.time()}
+        async def send():
+            async with aiohttp.ClientSession(trust_env=False) as session:
+                for route in routes:
+                    url = values["HERMES_AGENT_WEBHOOK_URL" if route == "agent" else "HERMES_WEBHOOK_URL"]
+                    if not url:
+                        raise ValueError(f"Missing {route} webhook")
+                    result = await deliver(session, url, values["HERMES_WEBHOOK_SECRET"], values["KALICO_PRINTER_NAME"], alert, route)
+                    print(route, result.get("status"))
+        asyncio.run(send())
+        return
     if args.command == "events":
         modes = parse_modes(values["KALICO_EVENT_MODES"])
         for name in LIFECYCLE_EVENTS:
