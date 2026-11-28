@@ -393,7 +393,9 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
     unit_changed = manage_service and (
         not unit.is_file() or unit.read_text(encoding="utf-8") != target_unit
     )
-    targets = ([config_path] if hermes_changed else []) + [env_path] + (
+    from .monitor_cfg import cfg_path, save_cfg
+    monitor_cfg = cfg_path(env_path)
+    targets = ([config_path] if hermes_changed else []) + [env_path, monitor_cfg] + (
         [unit] if unit_changed else [])
     for target in targets:
         if target.is_symlink():
@@ -424,6 +426,8 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
             touched.append(config_path)
         save_env(env_path, previous)
         touched.append(env_path)
+        save_cfg(monitor_cfg, previous)
+        touched.append(monitor_cfg)
         if unit_changed:
             fd, temp = tempfile.mkstemp(prefix=".kalico-service-", dir=unit.parent)
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
@@ -558,6 +562,10 @@ def reconfigure_menu(values: dict[str, str], ask=input, out=print,
                         "KALICO_CHAMBER_OBJECT", "" if raw == "-" else raw)
                 except ValueError as exc:
                     out(f"输入无效：{exc}")
+            continue
+        if choice == "8":
+            from .monitor_cfg import edit_events
+            pending["KALICO_EVENT_MODES"] = edit_events(pending["KALICO_EVENT_MODES"], ask, out)
             continue
         if choice == "10":
             mode = ask("关键故障模式 [direct/agent/both]：").strip()
