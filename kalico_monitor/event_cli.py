@@ -5,7 +5,7 @@ import argparse
 import json
 import urllib.request
 
-from .custom_config import load_extensions, load_handlers
+from .custom_config import load_sections
 from .event_registry import NATIVE, REGISTRY, SOURCE_TYPES, definition
 from .handlers import agent_url
 from .monitor_cfg import cfg_path
@@ -25,8 +25,7 @@ def main(argv: list[str]) -> None:
     args = parser.parse_args(argv)
     values = read_env(args.file.expanduser())
     path = cfg_path(args.file.expanduser())
-    message_fields, custom_rules = load_extensions(path)
-    handlers = load_handlers(path)
+    message_fields, custom_rules, handlers, _, templates = load_sections(path)
     if args.command == "handlers":
         if args.watch or args.native or args.source:
             parser.error("invalid handler filter")
@@ -80,7 +79,7 @@ def main(argv: list[str]) -> None:
                         raise ValueError(f"Missing {route} webhook")
                     result = await deliver(session, url, values["HERMES_WEBHOOK_SECRET"],
                                            values["KALICO_PRINTER_NAME"], alert, route,
-                                           message_fields=message_fields, message_templates=handlers.templates)
+                                           message_fields=message_fields, message_templates=templates)
                     print(route, result.get("status"))
         asyncio.run(send())
         return

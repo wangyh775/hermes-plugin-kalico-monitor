@@ -429,11 +429,10 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(2 if warnings else 0)
     if args.check:
         values = validate_all(read_env(path))
-        from .custom_config import load_extensions, load_handlers
+        from .custom_config import load_sections
         from .handlers import agent_url
         from .monitor_cfg import cfg_path
-        _, rules = load_extensions(cfg_path(path))
-        handlers = load_handlers(cfg_path(path))
+        _, rules, handlers, _, _ = load_sections(cfg_path(path))
         from .policy import validate_modes
         modes = parse_modes(values["KALICO_EVENT_MODES"])
         validate_modes(modes, rules)

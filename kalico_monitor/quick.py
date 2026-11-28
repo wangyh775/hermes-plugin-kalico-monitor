@@ -10,7 +10,15 @@ from typing import Any, Callable
 
 from .force import format_force
 from .status import query_force_status, query_status, query_status_with_chamber
-from .status_fields import DEFAULT_CONFIG, duration, parse_fields, remaining_time
+from .status_fields import (
+    DEFAULT_CONFIG,
+    chamber_status,
+    duration,
+    parse_fields,
+    remaining_time,
+    temperature_values,
+)
+from .status_fields import number as _number
 
 SUBCOMMANDS = frozenset({"status", "temp", "alerts", "health", "force", "help"})
 CONFIG_KEYS = frozenset({
@@ -64,7 +72,7 @@ def setting(name: str, get_secret: Callable[[str], str] | None = None) -> str:
             pass
     if os.environ.get(name):
         return os.environ[name]
-    return shared_config().get(name, "")
+    return shared.get(name, "")
 
 
 def database_path(get_secret: Callable[[str], str] | None = None) -> Path:
@@ -100,12 +108,6 @@ def _text(value: Any, limit: int = 92) -> str:
     return " ".join(value.strip().split())[:limit] or "—"
 
 
-def _number(value: Any) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    return float(value)
-
-
 def _degrees(value: Any) -> str:
     n = _number(value)
     return "—" if n is None else f"{n:.1f}°C"
@@ -125,9 +127,7 @@ def format_status(data: dict, printer: str = "Kalico",
         progress_text = f"{progress * 100:.1f}%"
     else:
         progress_text = "—（异常值）"
-    chamber_key = data.get("_kalico_chamber_object", "")
-    chamber = _mapping(data.get(chamber_key)) if isinstance(chamber_key, str) else {}
-    chamber_temp = _degrees(chamber.get("temperature"))
+    chamber_temp = _degrees(chamber_status(data).get("temperature"))
     values = {
         "state": f"打印：{_text(stats.get('state'))}｜Klippy：{_text(hooks.get('state'))}",
         "file": f"文件：{_text(stats.get('filename'))}",
@@ -141,8 +141,8 @@ def format_status(data: dict, printer: str = "Kalico",
     return "\n".join([f"🖨️ {printer} · 实时状态", *(values[key] for key in chosen)])
 
 def _temperature(status: dict, name: str) -> str:
-    obj = _mapping(status.get(name))
-    return f"{_degrees(obj.get('temperature'))} / 目标 {_degrees(obj.get('target'))}"
+    measured, target = temperature_values(_mapping(status.get(name)))
+    return f"{_degrees(measured)} / 目标 {_degrees(target)}"
 
 
 def format_temp(data: dict, printer: str = "Kalico") -> str:

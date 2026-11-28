@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
-from .custom_config import EventRule, Reliability, load_extensions, load_handlers, load_reliability
+from .custom_config import EventRule, Reliability
 from .handlers import HandlerConfig
 from .handlers import agent_url as resolve_agent_url
 
@@ -30,15 +30,15 @@ class Settings:
     handler_config: HandlerConfig = field(default_factory=HandlerConfig)
     reliability: Reliability = field(default_factory=Reliability)
     chamber_object: str = ""
+    message_templates: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def load(cls) -> "Settings":
-        from .monitor_cfg import cfg_path, read_cfg
+        from .monitor_cfg import cfg_path, load_cfg
         env_path = Path(os.getenv("KALICO_MONITOR_ENV_FILE", "~/.config/kalico-monitor/monitor.env")).expanduser()
         path = cfg_path(env_path)
-        overrides = read_cfg(path)
-        message_fields, event_rules = load_extensions(path)
-        handler_config = load_handlers(path)
+        overrides, sections = load_cfg(path)
+        message_fields, event_rules, handler_config, reliability, templates = sections
 
         def get(key: str, default: str = "") -> str:
             return overrides.get(key, os.getenv(key, default))
@@ -86,7 +86,7 @@ class Settings:
                    progress_report_minutes=report_minutes, watch_nozzle_force=watch_force,
                    hermes_agent_url=agent_url, event_modes=modes,
                     message_fields=message_fields, event_rules=event_rules,
-                    handler_config=handler_config, reliability=load_reliability(path),
+                    handler_config=handler_config, reliability=reliability, message_templates=templates,
                     chamber_object=get("KALICO_CHAMBER_OBJECT"))
 
     @property

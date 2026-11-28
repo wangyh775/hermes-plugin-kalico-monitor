@@ -233,7 +233,7 @@ async def test_terminal_http_rejection_does_not_block_recovery(tmp_path, monkeyp
     incident = {"incident_id": 1, "incident_key": "moonraker:1"}
     first = db.enqueue(Alert("moonraker_unreachable", 1, "", "lost", "critical", payload=incident))
     second = db.enqueue(Alert("moonraker_recovered", 1, "", "ready", "info", payload=incident))
-    task = asyncio.create_task(Monitor(cfg, db)._dispatch_route(None, "direct"))
+    task = asyncio.create_task(Monitor(cfg, db)._dispatch(None))
     try:
         await asyncio.wait_for(recovered.wait(), 2)
         assert db.conn.execute("SELECT suppressed FROM alert_routes WHERE alert_id=?", (first,)).fetchone()[0]

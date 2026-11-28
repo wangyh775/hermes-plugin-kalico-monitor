@@ -2,11 +2,11 @@
 
 **Kalico / Klipper 实时监控与 Hermes 消息通知插件**
 
-[English](README.md) · [安装与部署](docs/INSTALL.zh-CN.md) · [配置参考](docs/CONFIGURATION.zh-CN.md) · [事件与命令](docs/EVENTS.zh-CN.md) · [事件路由](docs/EVENT_ROUTING.zh-CN.md) · [故障排查](docs/TROUBLESHOOTING.zh-CN.md)
+[English](README.md) · [安装与部署](docs/INSTALL.zh-CN.md) · [配置参考](docs/CONFIGURATION.zh-CN.md) · [事件与命令](docs/EVENTS.zh-CN.md) · [事件路由](docs/EVENT_ROUTING.zh-CN.md) · [故障排查](docs/TROUBLESHOOTING.zh-CN.md) · [架构与可靠性](docs/EVENT_RELIABILITY.zh-CN.md)
 
 > **状态**：实验性项目。当前 `plugin.yaml` 标记 v0.3.0，`pyproject.toml` 仍标记 0.2.0，尚未完成统一正式发布和真实打印机—Hermes Gateway—飞书端到端验收。模拟测试不等于实机可靠性或安全认证。
 
-本项目面向高温 PEEK 等 3D 打印设备，通过 Moonraker 实时订阅 Kalico 状态，自动识别打印完成、暂停、故障、连接异常和可选喷嘴力回弹事件，经 Hermes Webhook 向飞书等已连接渠道发送通知。常规告警不调用 LLM，也不依赖摄像头或 Obico。
+本项目面向高温 PEEK 等 3D 打印设备，通过 Moonraker 实时订阅 Kalico 状态，自动识别打印完成、暂停、故障、连接异常和可选 filament_force 插件事件，经 Hermes Webhook 向飞书等已连接渠道发送通知。常规告警不调用 LLM，也不依赖摄像头或 Obico。
 
 
 ## Monitor CFG 与逐事件通知配置

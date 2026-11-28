@@ -5,33 +5,19 @@ countdown; reports are transactionally queued with their next due timestamp.
 """
 from __future__ import annotations
 
-import math
 from typing import Any
 
 from .events import Alert
+from .status_fields import chamber_status, remaining_time, temperature_values
+from .status_fields import number as _number
+from .status_fields import status_object as _object
 from .storage import Outbox
 
 META_KEY = "periodic_report_v1"
 
 
-def _number(value: Any) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    try:
-        number = float(value)
-    except OverflowError:
-        return None
-    return number if math.isfinite(number) else None
-
-
-def _object(data: dict, key: str) -> dict:
-    value = data.get(key)
-    return value if isinstance(value, dict) else {}
-
-
 def _temperature(value: dict) -> str:
-    measured = _number(value.get("temperature"))
-    target = _number(value.get("target"))
+    measured, target = temperature_values(value)
     current_text = f"{measured:.1f}" if measured is not None else "—"
     target_text = f"{target:.1f}" if target is not None else "—"
     return f"{current_text} / {target_text} °C（实际 / 目标）"
@@ -50,7 +36,6 @@ def report_fields(status: dict) -> dict:
     stats = _object(status, "print_stats")
     sd = _object(status, "virtual_sdcard")
     progress = _number(sd.get("progress"))
-    from .status_fields import remaining_time
     layer_info = _object(stats, "info")
     return {
         "progress": f"{progress * 100:.1f}%" if progress is not None and 0 <= progress <= 1 else "—",
@@ -58,7 +43,7 @@ def report_fields(status: dict) -> dict:
         "remaining": remaining_time(stats, sd),
         "nozzle": _temperature(_object(status, "extruder")),
         "bed": _temperature(_object(status, "heater_bed")),
-        "chamber": _temperature(_object(status, "heater_generic chamber") or _object(status, "temperature_sensor chamber")),
+        "chamber": _temperature(chamber_status(status)),
         "layer": _number(layer_info.get("current_layer")),
         "total_layers": _number(layer_info.get("total_layer")),
     }
@@ -67,25 +52,20 @@ def report_fields(status: dict) -> dict:
 def report_detail(status: dict) -> str:
     """Format observed Moonraker values only; never infer print quality."""
     stats = _object(status, "print_stats")
-    sdcard = _object(status, "virtual_sdcard")
-    extruder = _object(status, "extruder")
-    bed = _object(status, "heater_bed")
     filename = stats.get("filename")
     filename = filename.strip()[:180] if isinstance(filename, str) else ""
-    progress = _number(sdcard.get("progress"))
-    percent = f"{progress * 100:.1f}%" if progress is not None and 0 <= progress <= 1 else "未知"
+    fields = report_fields(status)
+    percent = fields["progress"] if fields["progress"] != "—" else "未知"
     lines = [
         "【打印过程定时报告】",
         f"文件：{filename or '未知'}",
         "状态：正在打印（Moonraker print_stats）",
         f"进度：{percent}（按文件位置估计）",
-        f"已打印：{_duration(stats.get('print_duration'))}",
-        f"喷嘴：{_temperature(extruder)}",
-        f"热床：{_temperature(bed)}",
+        f"已打印：{fields['elapsed']}",
+        f"喷嘴：{fields['nozzle']}",
+        f"热床：{fields['bed']}",
     ]
-    info = _object(stats, "info")
-    layer = _number(info.get("current_layer"))
-    total = _number(info.get("total_layer"))
+    layer, total = fields["layer"], fields["total_layers"]
     if layer is not None and total is not None and total > 0 and 0 <= layer <= total:
         lines.append(f"层数：{int(layer)} / {int(total)}")
     return "\n".join(lines)

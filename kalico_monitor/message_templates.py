@@ -5,9 +5,8 @@ import json
 import time
 from typing import Any
 
-from .custom_config import DEFAULT_MESSAGE_FIELDS
+from .custom_config import DEFAULT_MESSAGE_FIELDS, PLACEHOLDER
 from .event_registry import row_metadata, utc_timestamp
-from .handlers import PLACEHOLDER
 
 LABELS = {
     "printer": "设备", "kind": "事件", "severity": "等级", "occurred_at": "时间",

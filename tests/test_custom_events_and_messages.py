@@ -205,3 +205,25 @@ def test_subscription_fallback_preserves_base_monitoring(tmp_path):
         assert subs[-1]["params"]["objects"] == subscribe_request(False)["params"]["objects"]
     finally:
         db.close()
+
+
+def test_single_cfg_parse_and_independent_direct_template(tmp_path, monkeypatch):
+    from kalico_monitor import custom_config
+    from kalico_monitor.monitor_cfg import load_cfg
+
+    path = tmp_path / "monitor.cfg"
+    path.write_text("[events]\npaused: direct\n[message paused]\ntemplate: Pause {printer}\n")
+    original = custom_config._parser
+    calls = []
+
+    def counted(path):
+        calls.append(path)
+        return original(path)
+
+    monkeypatch.setattr(custom_config, "_parser", counted)
+    values, sections = load_cfg(path)
+    _, _, handlers, _, templates = sections
+    assert calls == [path]
+    assert values["KALICO_EVENT_MODES"] == "paused=direct"
+    assert handlers.handlers == {}
+    assert templates == {"paused": "Pause {printer}"}

@@ -1,49 +1,54 @@
-# 事件系统可靠性专项
+# 事件可靠性与系统架构
 
-Monitor 仍只负责事件产生与路由，不新增处理宏、Skill 或打印机动作。
-Direct 与 Agent 独立分发，任一任务异常退出均传播至主进程；
-两路分别记录心跳，心跳不代表飞书已送达。critical 优先于 warning、info；
-每路一个在途请求，不抢占已发请求。超过 30 分钟的待发进度报告过滤。
+Monitor 是独立、只读的事件生成与路由服务，不执行打印机动作，不依赖 Kiln。klipper-filament-force 是独立的 Klipper 扩展；Monitor 仅通过 Moonraker WebSocket/HTTP 读取事件日志，原始载荷、受力窗口及事件 ID 保持不变。
 
-订阅确认匹配请求 ID，Klippy ready 使旧订阅失效，新订阅单次确认超时 20 秒。
-每 30 秒刷新订阅以确认未改变的字段，降级时重新发现可选对象。
-明确的订阅拒绝属于能力故障，不等同于传输断线。数值规则要求有效订阅及 120 秒字段新鲜度，
-连续观测采用单调时钟，断线与进程重启清除未完成窗口；
-已告警阈值保持锁存，直到有效正常值出现。
-可选对象缺失、规则字段无效反映在订阅健康状态，
-并产生 monitor_degraded / monitor_recovered；恢复不表示能补回所有遗漏事件。
-
-原生事件默认关闭。不同的连续事件内容不再按方法名统一限频。
-完全相同且连续的事件在 2 秒内去重（按钮边沿及 G-code 响应例外）。
-普通 G-code 响应每路通知尝试限频 10 秒，记录保留于 SQLite，warning 及以上不受该限制。
-仍非无损日志或严格一次投递。
-16 KiB 保守载荷上限，超限丢弃并记录计数。服务状态、CPU 限频位、G-code 响应、
-任务及队列字段可用于模板，保留原始 event.params。
-
-## 配置与规范
-
-未知事件、开启不可转发事件会报错。nozzle_force_anomaly: off 提示迁移，请删除；
-消息模板引用须为已注册事件、自定义规则或默认模板。
-六类来源保持不变，external 尚无接收接口。注册定义集中描述严重等级、默认路由、
-Schema 版本、载荷类别及去重策略，原生状态变化可动态调整严重等级。
-
-Webhook 兼容 v1，规范见 event-envelope-v1.schema.json。
-occurred_at 保留旧版入队时间语义，queued_at 为 UTC，received_at 为 Monitor 观察时间
-（旧数据可能为空），source_occurred_at 无可信源时钟时为空（当前不猜测源时间）。
-投递时间在 SQLite 中记录，Agent accepted 不代表推理完成。
-已有事件 ID、堵头原始载荷保持兼容。故障事件与关联 ID 一起持久化；
-报告间隔变化不再重置同一任务的报告序号。
-
-## 校验
-
-```bash
-python -m pytest -q
-ruff check .
-kalico-monitor config --check
-kalico-monitor events --info monitor_degraded
-kalico-monitor events --info notify_service_state_changed
+```mermaid
+flowchart TD
+    K[Kalico / Klipper 扩展] --> M[Moonraker API]
+    M --> E[Monitor 事件生成与注册]
+    C[monitor.cfg] --> E
+    E --> O[SQLite Outbox]
+    O --> R[统一路由分配]
+    R --> D[Direct 分发]
+    R --> A[Agent 分发]
+    D --> H[Hermes Gateway]
+    A --> H
 ```
 
-实机验收需确认 Moonraker 订阅刷新、可选对象、Hermes 与飞书送达、数据库增长、
-systemd 重启。/kalico health 显示订阅状态及独立分发心跳。
-本模块不是打印机实时安全保护。
+## 运行机制
+
+- 统一通信状态转换；WebSocket 心跳、静默时 RPC 探测、订阅刷新各司其职。连接代次和订阅请求 ID 拒绝迟到响应，传输、RPC、订阅状态保持区分；降级时重新发现可选对象。
+- Shutdown 先入库后查询。Ready、恢复事件和 Incident 关闭同一事务提交；同一故障按路由保证顺序，历史关联仅在身份可确认时迁移。关键载荷损坏时保留原 ID 与最小合法告警，异常输入与永久失败进入死信表。
+- 单一路由分配入口，Direct、Agent 独立投递与重试；每路一个在途请求，关键事件优先。HTTP 400/413/422 与本地编码失败按现有策略终结，其他临时错误重试。确认不等于飞书最终送达或模型推理结束。超过30分钟的待发进度报告过滤。
+- 自定义规则需有效新鲜观测；有效正常值才重新武装。任务身份优先使用可用 History，辅以保守回退。插件事件与游标原子保存，跳过重复记录，报告已知序列缺口，迟到缺失记录仍可入库。
+- SQLite WAL 与短事务；每分钟更新存储健康状态，每小时最多压缩1000条七天前已终结普通 G-code 载荷，保留 ID、关键事件和待发事件。没有硬容量限制或独立写线程。
+- 原生通知默认关闭；连续相同内容2秒去重（按钮与 G-code 除外），普通 G-code 每路10秒通知限频，16 KiB 原生载荷上限。
+
+## 配置与诊断
+
+monitor.env、monitor.cfg 格式不变。配置扩展统一解析，Direct 模板与 Agent 路由解耦，Handler/Skill 冻结。现有 watch_nozzle_force 仍为 filament_force 事件开关；删除无效 Python 参数 filament_only/legacy_only。旧 nozzle_force_anomaly: off 仍提供迁移提示。
+
+```ini
+[reliability]
+subscription_refresh: 30
+subscription_timeout: 20
+observation_gap: 35
+field_max_age: 120
+connect_timeout: 5
+```
+
+参见[事件规范](event-envelope-v1.schema.json)及配置参考。保留既有事件 ID 与字段，未知源绝对时间为空，不进行推算。
+
+```bash
+kalico-monitor config --check
+kalico-monitor events
+kalico-monitor dead-letters list
+kalico-monitor incidents list
+kalico-monitor storage status
+python -m pytest -q
+ruff check .
+```
+
+模拟故障及事务测试不能替代实机验收；仍需在设备验证真实通信、飞书通知与长期数据库增长。Monitor 不是打印机实时安全保护系统。
+
+历史开发记录：[第一轮](archive/EVENT_RELIABILITY.zh-CN.md)、[第二轮](archive/EVENT_RELIABILITY_PHASE2.zh-CN.md)、[第三轮](archive/EVENT_RELIABILITY_PHASE3.zh-CN.md)。归档仅记录当时实现，不代表当前默认参数。

@@ -2,7 +2,7 @@
 
 **Realtime, read-only Kalico/Klipper monitoring and Hermes notifications.**
 
-[中文说明](README.zh-CN.md) · [Chinese deployment guide](docs/INSTALL.zh-CN.md) · [Configuration](docs/CONFIGURATION.zh-CN.md) · [Events](docs/EVENTS.zh-CN.md) · [Event routing](docs/EVENT_ROUTING.zh-CN.md) · [Troubleshooting](docs/TROUBLESHOOTING.zh-CN.md)
+[中文说明](README.zh-CN.md) · [Chinese deployment guide](docs/INSTALL.zh-CN.md) · [Configuration](docs/CONFIGURATION.zh-CN.md) · [Events](docs/EVENTS.zh-CN.md) · [Event routing](docs/EVENT_ROUTING.zh-CN.md) · [Troubleshooting](docs/TROUBLESHOOTING.zh-CN.md) · [Architecture and reliability](docs/EVENT_RELIABILITY.md)
 
 **Status:** Experimental. The plugin manifest currently says v0.3.0 while Python packaging still says 0.2.0; no real printer-to-Hermes-to-Feishu end-to-end validation has been completed. This is not a safety system.
 
