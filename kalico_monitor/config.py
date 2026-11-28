@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
-from .custom_config import EventRule, load_extensions, load_handlers
+from .custom_config import EventRule, Reliability, load_extensions, load_handlers, load_reliability
 from .handlers import HandlerConfig
 from .handlers import agent_url as resolve_agent_url
 
@@ -28,6 +28,8 @@ class Settings:
     message_fields: dict[str, tuple[str, ...]] = field(default_factory=dict)
     event_rules: tuple[EventRule, ...] = ()
     handler_config: HandlerConfig = field(default_factory=HandlerConfig)
+    reliability: Reliability = field(default_factory=Reliability)
+    chamber_object: str = ""
 
     @classmethod
     def load(cls) -> "Settings":
@@ -84,7 +86,8 @@ class Settings:
                    progress_report_minutes=report_minutes, watch_nozzle_force=watch_force,
                    hermes_agent_url=agent_url, event_modes=modes,
                     message_fields=message_fields, event_rules=event_rules,
-                    handler_config=handler_config)
+                    handler_config=handler_config, reliability=load_reliability(path),
+                    chamber_object=get("KALICO_CHAMBER_OBJECT"))
 
     @property
     def ws_url(self) -> str:

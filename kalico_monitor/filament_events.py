@@ -81,6 +81,7 @@ class FilamentEventTracker:
     def __init__(self, store: Outbox):
         self.store = store
         self.last_events = None
+        self.seen_ids = set()
 
     def observe(self, status: dict, state: dict, *, source_method=None) -> int:
         obj = status.get(OBJECT)
@@ -91,6 +92,9 @@ class FilamentEventTracker:
         cursor = self.store.get_meta("filament_cursors_v1", {})
         valid = []
         for event in events:
+            event_id = event.get("event_id") if isinstance(event, dict) else None
+            if isinstance(event_id, str) and event_id in self.seen_ids:
+                continue
             if not valid_event(event):
                 try:
                     raw = json.dumps(event, ensure_ascii=True, default=str)
@@ -120,9 +124,13 @@ class FilamentEventTracker:
                           severity=EVENTS[kind][1], source_id=event["event_id"],
                           payload=event, trigger="extension_journal", source_method=source_method)
             if seq <= last and self.store.has_alert(alert):
+                self.seen_ids.add(event["event_id"])
                 continue
             if seq > last:
                 cursor[boot] = seq
             count += int(self.store.journal_checkpoint(cursor, alert, gap))
+            self.seen_ids.add(event["event_id"])
+        if len(self.seen_ids) > 4096:
+            self.seen_ids = {item["event_id"] for item in valid}
         self.last_events = events
         return count

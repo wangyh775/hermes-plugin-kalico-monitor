@@ -98,6 +98,16 @@ class Outbox:
             if type(generation) is int and generation > 0:
                 self.conn.execute("UPDATE alerts SET incident_key=? WHERE id=?",
                                   (f"{prefix}:{generation}", row["id"]))
+        # Recover a previously committed Ready state with a still-open shutdown
+        # incident left by the non-atomic v2 recovery path.
+        state = self.get_state() or {}
+        opened = self.get_meta("shutdown_open_incident", {})
+        if state.get("klippy_state") == "ready" and opened.get("id"):
+            generation = opened["id"]
+            self._insert(Alert("klippy_shutdown_recovered", generation, "", "Klippy ready (recovered during migration)",
+                               "info", payload={"incident_id": generation,
+                               "incident_key": f"klippy_shutdown:{generation}"}, trigger="migration"))
+            self._set_meta("shutdown_open_incident", {})
         self._set_meta("incident_migration_v1", True)
 
     def close(self):
@@ -145,14 +155,14 @@ class Outbox:
             (id,kind,route,reason,created,data) VALUES (?,?,?,?,?,?)""",
             (key, str(kind).encode("utf-8", "replace").decode()[:100], route,
              str(reason).encode("utf-8", "replace").decode()[:300], time.time(),
-             json.dumps(data, ensure_ascii=True, default=str)[:4096]))
+             json.dumps({"preview": safe_text(data, 3000)}, ensure_ascii=True)))
 
     def quarantine(self, key, kind, reason, data):
         with self.conn:
             self._quarantine(key, kind, "ingest", reason, data)
 
-    def _insert(self, alert: Alert, *, fallback=True) -> WriteResult:
-        digest = self.alert_id(alert)
+    def _insert(self, alert: Alert, *, fallback=True, stable_id=None) -> WriteResult:
+        digest = stable_id or self.alert_id(alert)
         if self.conn.execute('SELECT 1 FROM alerts WHERE id=?', (digest,)).fetchone():
             return WriteResult(digest, 'duplicate')
         try:
@@ -191,9 +201,9 @@ class Outbox:
                 result = self._insert(replace(alert, detail="Critical event detected; diagnostic payload quarantined",
                     filename=safe_text(alert.filename, 180), payload=minimal,
                     source_eventtime=None, source_clock_id=None,
-                    source_method=None, trigger="payload_degraded",
+                    source_method=None, trigger="payload_degraded", received_at=time.time(), generated_at=time.time(),
                     source_id=safe_text(alert.source_id) if alert.source_id is not None else None),
-                    fallback=False)
+                    fallback=False, stable_id=digest)
                 if result.status != "quarantined":
                     return WriteResult(result.id, "degraded")
                 raise ValueError("critical event cannot be persisted")
@@ -274,7 +284,8 @@ class Outbox:
                 (time.time(), alert_id))
         else:
             self.conn.execute("""UPDATE alerts
-                SET suppressed=?, last_error='suppressed by event policy'
+                SET suppressed=?, last_error=CASE WHEN EXISTS (SELECT 1 FROM dead_letters d
+                    WHERE d.id LIKE alerts.id || ':%') THEN 'permanent failure' ELSE 'suppressed by event policy' END
                 WHERE id=? AND delivered IS NULL AND suppressed IS NULL""",
                 (time.time(), alert_id))
 

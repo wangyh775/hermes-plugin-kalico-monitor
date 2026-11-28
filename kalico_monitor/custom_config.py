@@ -26,7 +26,7 @@ MESSAGE_FIELDS = {
     "received_at", "queued_at", "source_occurred_at", "previous_state", "current_state",
     "klippy_state", "params_summary", "service", "service_state", "throttle_bits",
     "incident_id", "source_event_id", "generation", "sequence",
-    "incident_key", "source_eventtime", "source_clock_id", "generated_at",
+    "incident_key", "source_eventtime", "source_clock_id", "generated_at", "payload_degraded",
     "gcode_response", "action", "queue_state", "name", "job_filename",
 }
 DEFAULT_MESSAGE_FIELDS = (
@@ -35,6 +35,32 @@ DEFAULT_MESSAGE_FIELDS = (
 COMPARATORS = {"gt", "ge", "lt", "le"}
 SEVERITIES = {"info", "warning", "critical"}
 BASE_SECTIONS = {"monitor", "events", "hermes", "printer", "status"}
+
+
+@dataclass(frozen=True)
+class Reliability:
+    subscription_refresh: int = 30
+    subscription_timeout: int = 20
+    observation_gap: int = 35
+    field_max_age: int = 120
+    connect_timeout: int = 5
+
+    def __post_init__(self):
+        if not (5 <= self.subscription_refresh <= 120 and
+                5 <= self.subscription_timeout <= 60 and
+                self.subscription_refresh < self.observation_gap <= self.field_max_age <= 600 and
+                1 <= self.connect_timeout <= 30):
+            raise ValueError("Invalid [reliability] time bounds")
+
+
+def load_reliability(path: Path) -> Reliability:
+    parser = _parser(path)
+    if not parser.has_section("reliability"):
+        return Reliability()
+    values = dict(parser.items("reliability"))
+    if set(values) - set(Reliability.__dataclass_fields__):
+        raise ValueError("Unknown [reliability] option")
+    return Reliability(**{key: int(value) for key, value in values.items()})
 
 
 @dataclass(frozen=True)
@@ -80,6 +106,9 @@ def load_extensions(path: Path) -> tuple[dict[str, tuple[str, ...]], tuple[Event
     rules: list[EventRule] = []
     for section in parser.sections():
         if section in BASE_SECTIONS:
+            continue
+        if section == "reliability":
+            load_reliability(path)
             continue
         if section == "message" or section.startswith("message "):
             name = "default" if section == "message" else section[8:]

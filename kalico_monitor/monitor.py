@@ -70,7 +70,7 @@ class Monitor:
         self.last_status_received_at: float | None = None
         self.reporter = PeriodicReporter(store, settings.progress_report_minutes)
         self.filament_tracker = FilamentEventTracker(store) if settings.watch_nozzle_force else None
-        self.rule_engine = RuleEngine(store, settings.event_rules)
+        self.rule_engine = RuleEngine(store, settings.event_rules, reliability=settings.reliability)
         self.last_stored_state = store.get_state()
         self.klippy_down_since: float | None = None
         self.klippy_down_alerted = False
@@ -100,6 +100,7 @@ class Monitor:
         self.ws_offline_since = time.monotonic()
         self._invalidate_subscription("starting")
         self.store.set_meta("transport_connected", False)
+        self.store.set_meta("rpc_health", "unconfirmed")
         self.store.update_storage_health()
 
     def _invalidate_subscription(self, state="subscribing"):
@@ -120,6 +121,8 @@ class Monitor:
 
     def _capabilities(self, snapshot):
         required = set(self.rule_engine.objects)
+        if self.settings.chamber_object:
+            required.add(self.settings.chamber_object)
         if self.settings.watch_nozzle_force:
             required.add(FILAMENT_OBJECT)
         required.update(("print_stats", "webhooks", "virtual_sdcard"))
@@ -325,6 +328,8 @@ class Monitor:
                                "Moonraker subscription restored", "info")
         self.ws_offline_since = None
         self.ws_offline_notified = False
+        if self.settings.chamber_object and self.settings.chamber_object in snapshot:
+            snapshot = {**snapshot, "heater_generic chamber": snapshot[self.settings.chamber_object]}
         state, alerts = processor.set_snapshot(snapshot, time.monotonic(), allow_stall=False)
         processor.status.pop('_monitor_job', None)
         eventtime = source_eventtime if type(source_eventtime) in (int, float) and abs(source_eventtime) < 1e15 else None
@@ -387,11 +392,11 @@ class Monitor:
                 self.klippy_down_since is None
                 and self.shutdown_query_since is None
                 and self.last_status_received_at is not None
-                and time.monotonic() - self.last_status_received_at <= 120
+                and time.monotonic() - self.last_status_received_at <= self.settings.reliability.field_max_age
             )
             fresh = time.monotonic()
             progress_seen = self.field_seen.get(("virtual_sdcard", "file_position"), float("-inf"))
-            stall_fresh = connected and 0 <= fresh - progress_seen <= 120
+            stall_fresh = connected and 0 <= fresh - progress_seen <= self.settings.reliability.field_max_age
             if not stall_fresh and processor.previous:
                 processor.previous = {**processor.previous, "progress_changed_at": fresh}
             current, alerts = processor.evaluate(fresh, allow_stall=stall_fresh)
@@ -433,7 +438,7 @@ class Monitor:
 
     async def _rule_objects(self, session: aiohttp.ClientSession, headers: dict) -> tuple[str, ...]:
         """Only subscribe to existing optional objects; never block base monitoring."""
-        desired = self.rule_engine.objects
+        desired = tuple(sorted(set(self.rule_engine.objects) | ({self.settings.chamber_object} if self.settings.chamber_object else set())))
         if not desired:
             return ()
         try:
@@ -501,7 +506,7 @@ class Monitor:
             while True:
                 if self.transport_lost:
                     raise ConnectionError("Moonraker liveness probe failed")
-                if not pending and self.shutdown_query_since is None and time.monotonic() - last_refresh >= 30:
+                if not pending and self.shutdown_query_since is None and time.monotonic() - last_refresh >= self.settings.reliability.subscription_refresh:
                     # Rediscover optional objects after fallback, not just on reconnect.
                     if not self.subscription_active or self.store.get_meta("capability_state", {}).get("missing"):
                         rule_objects = await self._rule_objects(session, headers)
@@ -512,7 +517,7 @@ class Monitor:
                     pending = True
                     requested_at = last_refresh = time.monotonic()
                     await ws.send_json({**subscriptions[subscription_index], "id": request_id})
-                if pending and time.monotonic() - requested_at > 20:
+                if pending and time.monotonic() - requested_at > self.settings.reliability.subscription_timeout:
                     if self.last_transport_seen is not None and self.last_transport_seen > requested_at:
                         self._invalidate_subscription("degraded")
                         self._capabilities({})
@@ -661,6 +666,9 @@ class Monitor:
                         self._tick(processor)
                         continue
                     params = packet.get("params")
+                    if method == "notify_status_update" and self.settings.chamber_object and isinstance(params, list) and params and isinstance(params[0], dict) and self.settings.chamber_object in params[0]:
+                        params = [{**params[0], "heater_generic chamber": params[0][self.settings.chamber_object]}, *params[1:]]
+                        packet = {**packet, "params": params}
                     if method == "notify_status_update" and isinstance(params, list) and params and isinstance(params[0], dict):
                         self._remember_fields(params[0])
                     current, alerts = processor.handle_packet(packet, time.monotonic(), allow_stall=False)
@@ -755,7 +763,9 @@ class Monitor:
     async def run(self):
         headers = {"User-Agent": "hermes-plugin-kalico-monitor/0.3"}
         async with aiohttp.ClientSession(headers=headers, trust_env=False,
-                                         timeout=aiohttp.ClientTimeout(total=10, connect=5, sock_connect=5)) as session:
+                                         timeout=aiohttp.ClientTimeout(total=max(10, self.settings.reliability.connect_timeout + 5),
+                                                                       connect=self.settings.reliability.connect_timeout,
+                                                                       sock_connect=self.settings.reliability.connect_timeout)) as session:
             await self._supervise(self._dispatch(session), self._listen_forever(session),
                                   self._communication_watchdog(), self._maintenance())
 
@@ -767,6 +777,10 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == "config":
         from .setup import main as config_main
         config_main(sys.argv[2:])
+        return
+    if len(sys.argv) > 1 and sys.argv[1] in {"dead-letters", "incidents", "storage"}:
+        from .inspect_db import main as inspect_main
+        inspect_main(sys.argv[1:])
         return
     if len(sys.argv) > 1 and sys.argv[1] in {"events", "discover", "test", "handlers"}:
         from .event_cli import main as event_main

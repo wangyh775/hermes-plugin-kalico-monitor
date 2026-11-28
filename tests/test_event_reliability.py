@@ -137,17 +137,20 @@ async def test_ready_resubscribe_timeout_even_after_valid_snapshot(tmp_path, mon
                 packet = {"id": self.sent[-1]["id"], "result": {"status": SNAPSHOT}}
             elif self.count == 2:
                 packet = {"method": "notify_klippy_ready"}
-            else:
+            elif self.count <= 6:
                 clock[0] += 6
                 packet = {"id": self.sent[0]["id"], "result": {"status": SNAPSHOT}}
+            else:
+                raise ConnectionError("end of test")
             return SimpleNamespace(type=aiohttp.WSMsgType.TEXT, data=json.dumps(packet))
 
     socket = Socket()
     session = SimpleNamespace(ws_connect=lambda *a, **kw: socket)
     try:
         monitor = Monitor(cfg, db)
-        with pytest.raises(TimeoutError, match="subscription reply"):
+        with pytest.raises(ConnectionError, match="end of test"):
             await monitor._listen(session)
+        assert db.get_meta("subscription_health")["state"] == "degraded"
         assert len(socket.sent) == 2
         assert socket.sent[0]["id"] != socket.sent[1]["id"]
         assert not monitor.subscription_active
