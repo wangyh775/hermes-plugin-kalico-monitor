@@ -1,5 +1,6 @@
 """Configurable Direct notification fields and safe Moonraker event rules."""
 import json
+
 import pytest
 
 from kalico_monitor.config import Settings

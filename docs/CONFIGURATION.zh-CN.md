@@ -43,7 +43,7 @@ klippy_disconnected: direct
 klippy_recovered: direct
 moonraker_unreachable: direct
 moonraker_recovered: direct
-nozzle_force_anomaly: both
+filament_jam_confirmed: both
 ```
 
 事件策略：`off` 禁止新通知；`direct` 零 LLM 直推；`agent` 模型分析；`both` 两路独立投递。PR #20 起，Monitor 重启加载新策略时，还会撤销旧队列中不再允许的待发送路由；已经实际投递的路由保留历史记录。`off` 会在数据库和 `/kalico alerts` 中标为“已过滤”，不会虚计“已投递”。关闭通知不关闭打印状态跟踪。定时报告、停滞及喷嘴力监控仍需各自启用。喷嘴力事件依赖兼容的状态对象，任意自定义 Kalico 内部事件尚不能自动接入。
@@ -135,7 +135,7 @@ bash install.sh --reconfigure
 | `KALICO_DISCONNECT_SECONDS` | `25` | Klippy/Moonraker 断连确认窗口，最小 5 秒 |
 | `KALICO_STALL_MINUTES` | `0` | 打印停滞检测窗口，0 为关闭；仅根据状态/进度判断，可能误报 |
 | `KALICO_PROGRESS_REPORT_MINUTES` | `0` | 打印中定时报告，0 为关闭；启用时允许 5–1440 分钟 |
-| `KALICO_WATCH_NOZZLE_FORCE` | `0` | 订阅自定义 `nozzle_force_monitor`；支持 0/1、true/false、yes/no、on/off |
+| `KALICO_WATCH_NOZZLE_FORCE` | `0` | 订阅 `filament_force.events`；支持 0/1、true/false、yes/no、on/off |
 
 `MOONRAKER_URL` 会转换为对应 `ws://` 或 `wss://` 的 `/websocket` 订阅地址。监控器连接 Moonraker 时使用 `X-Api-Key`（若配置），不会自动发现打印机地址。
 
@@ -166,14 +166,14 @@ HERMES_WEBHOOK_SECRET=替换为真实随机密钥
 KALICO_MONITOR_DB=/home/YOUR_USER/.local/state/kalico-monitor/alerts.sqlite3
 KALICO_ALLOWED_CHAT_IDS=
 HERMES_AGENT_WEBHOOK_URL=http://127.0.0.1:8644/webhooks/kalico-analysis
-KALICO_EVENT_MODES=klippy_shutdown=both,nozzle_force_anomaly=both
+KALICO_EVENT_MODES=klippy_shutdown=both,filament_jam_confirmed=both
 KALICO_DISCONNECT_SECONDS=25
 KALICO_STALL_MINUTES=0
 KALICO_PROGRESS_REPORT_MINUTES=30
 KALICO_WATCH_NOZZLE_FORCE=1
 ~~~
 
-`KALICO_WATCH_NOZZLE_FORCE=1` 仅在打印机已安装、启用并验证 PR #13 的自定义模块后设置。修改完毕：
+`KALICO_WATCH_NOZZLE_FORCE=1` 仅在打印机已安装并验证 `klipper-filament-force` 后设置。修改完毕：
 
 ~~~bash
 chmod 600 ~/.config/kalico-monitor/monitor.env
@@ -187,7 +187,7 @@ journalctl --user -u kalico-monitor -n 50 --no-pager
 
 **已经实现**：断线确认时间、停滞检测开关/窗口、定时报告开关/间隔、喷嘴力桥接开关、可选聊天限制、打印机名称、网络与密钥，以及逐事件 `direct` / `agent` / `both` 路由。
 
-**尚未实现**：任意事件的独立 `enabled` 开关、每种事件的严重程度自定义、每事件独立冷却时间、通用 YAML 条件规则、按打印机动态切换、首层 Z 偏移独立通知、飞书远程修改规则。这些属于后续规则引擎/事件桥接扩展，不能直接把示例 YAML 当成现有配置。
+**已实现**：`[message]` / `[message KIND]` 自选 Direct 字段、`[event KIND]` 基于现有 Moonraker 数值状态对象的只读阈值/持续时间/冷却时间规则。**尚未实现**：通用 G-code 动作执行、非数值逻辑表达式、多打印机聚合、Agent 自动控制。详情参见 [事件路由与消息配置](EVENT_ROUTER.zh-CN.md)。
 
 ## 5. 运维注意
 
@@ -202,7 +202,7 @@ journalctl --user -u kalico-monitor -n 50 --no-pager
 
 ~~~ini
 HERMES_AGENT_WEBHOOK_URL=http://127.0.0.1:8644/webhooks/kalico-analysis
-KALICO_EVENT_MODES=complete=direct,paused=direct,print_progress=direct,klippy_shutdown=both,nozzle_force_anomaly=both
+KALICO_EVENT_MODES=complete=direct,paused=direct,print_progress=direct,klippy_shutdown=both,filament_jam_confirmed=both
 ~~~
 
 - `direct`：仅调用 Hermes `kalico-alert` Webhook；此路由在 Hermes 侧应设置 `deliver_only: true`。
@@ -210,3 +210,8 @@ KALICO_EVENT_MODES=complete=direct,paused=direct,print_progress=direct,klippy_sh
 - `both`：生成两条独立持久化投递任务，普通通知和 AI 受理互不阻塞；两路分别有幂等请求 ID、失败次数和重试时间。
 
 `KALICO_EVENT_MODES` 留空时所有事件为 `direct`；添加 `default=agent` 或 `default=both` 会对**全部未单独覆盖的事件**启用模型路由，可能增加调用成本。Agent 响应 JSON `accepted` 仅代表已受理，不表示 LLM 分析完成或飞书实际送达。旧版数据库会自动增加 `alert_routes` 表；注意只在 Monitor 第一次处理事件时确定路由，修改配置不会 retroactively 改变已分配任务。详见 [事件路由说明](EVENT_ROUTING.zh-CN.md)。
+
+
+## 7. 自定义事件与 Direct 模板
+
+请参见 [事件路由、通知字段与自定义数值规则](EVENT_ROUTER.zh-CN.md)。`started/paused` 属于 Moonraker 状态派生事件；`filament_force` 为插件事件；`[event ...]` 生成自定义阈值事件。仅通知，不执行打印动作。
