@@ -10,7 +10,7 @@ from typing import Any
 import aiohttp
 
 from .custom_config import DEFAULT_MESSAGE_FIELDS
-from .event_registry import row_metadata
+from .event_registry import row_metadata, utc_timestamp
 from .message_templates import render_direct_message
 
 
@@ -30,8 +30,8 @@ def make_request(alert: dict, secret: str, printer: str, timestamp: int | None =
     }
     payload.update(row_metadata(alert))
     # Preserve legacy occurred_at (queue time); do not invent source time.
-    payload.update(queued_at=payload['occurred_at'], received_at=alert.get('received_at'),
-                   source_occurred_at=None)
+    payload.update(queued_at=utc_timestamp(alert['created']),
+                   received_at=payload.get('received_at'), source_occurred_at=None)
     if alert.get("payload"):
         payload["event"] = json.loads(alert["payload"])
     if route == "direct":

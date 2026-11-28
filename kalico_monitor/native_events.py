@@ -43,15 +43,50 @@ class NativeEventAdapter:
         now = time.monotonic() if now is None else now
         fingerprint = hashlib.sha256(serialized.encode()).hexdigest()
         previous = self.last.get(method)
-        if previous and previous[0] == fingerprint and now - previous[1] < COOLDOWN_SECONDS:
+        if method not in {"notify_button_event"} and previous and previous[0] == fingerprint and now - previous[1] < COOLDOWN_SECONDS:
             return False
         summary = json.dumps(params, ensure_ascii=False, allow_nan=False)[:1000]
+        fields, severity = normalized_fields(method, params, entry.severity)
         alert = Alert(
             kind=method, generation=0, filename="", detail=f"{entry.description}: {summary}",
-            severity=entry.severity,
-            source_id=uuid.uuid4().hex, payload={"params": params, "params_summary": summary},
+            severity=severity,
+            source_id=uuid.uuid4().hex, payload={"params": params, "params_summary": summary, **fields},
             source_method=method, trigger="notification",
         )
         self.store.enqueue(alert)
         self.last[method] = (fingerprint, now)
         return True
+
+
+def normalized_fields(method, params, severity):
+    """Expose bounded, documented scalar fields; retain original positional params."""
+    first = params[0] if params else None
+    fields = {}
+    if method == "notify_service_state_changed" and isinstance(first, dict):
+        services = [(name, item) for name, item in first.items()
+                    if isinstance(item, dict)]
+        fields["service"] = ", ".join(name for name, _ in services)[:300]
+        fields["service_state"] = ", ".join(
+            f"{name}: {item.get('active_state', '?')}/{item.get('sub_state', '?')}"
+            for name, item in services)[:600]
+        if any(item.get("active_state") == "failed" for _, item in services):
+            severity = "critical"
+        elif any(item.get("active_state") == "inactive" for _, item in services):
+            severity = "warning"
+    elif method == "notify_cpu_throttled" and isinstance(first, dict):
+        bits = first.get("bits")
+        if type(bits) is int:
+            fields["throttle_bits"] = bits
+            severity = "warning" if bits & 15 else "info"
+    elif method == "notify_gcode_response" and isinstance(first, str):
+        fields["gcode_response"] = first[:1000]
+        if any(word in first.lower() for word in ("error", "failed", "shutdown")):
+            severity = "warning"
+    elif isinstance(first, dict):
+        for key in ("action", "queue_state", "name"):
+            if isinstance(first.get(key), str):
+                fields[key] = first[key][:300]
+        job = first.get("job")
+        if isinstance(job, dict) and isinstance(job.get("filename"), str):
+            fields["job_filename"] = job["filename"][:300]
+    return fields, severity

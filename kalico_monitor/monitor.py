@@ -21,7 +21,7 @@ from .native_events import NativeEventAdapter
 from .notifier import deliver
 from .policy import parse_modes, routes_for
 from .reports import PeriodicReporter
-from .rule_engine import RuleEngine
+from .rule_engine import RuleEngine, numeric_field
 from .storage import Outbox
 
 LOG = logging.getLogger("kalico-monitor")
@@ -95,6 +95,7 @@ class Monitor:
         self.rule_engine.suspend()
         self.reporter.suspend()
         self.store.set_meta("subscription_health", {"state": state, "missing": []})
+        self.reset_stall_clock = True
 
     def _remember_fields(self, update):
         now = time.monotonic()
@@ -111,7 +112,6 @@ class Monitor:
         if self.settings.watch_nozzle_force and FILAMENT_OBJECT not in missing:
             if not isinstance(snapshot[FILAMENT_OBJECT].get("events"), list):
                 missing.add(FILAMENT_OBJECT + ".events")
-        from .rule_engine import numeric_field
         for rule in self.settings.event_rules:
             if numeric_field(snapshot, rule.object, rule.field) is None:
                 missing.add(f"{rule.object}.{rule.field}")
@@ -148,7 +148,7 @@ class Monitor:
         A force alarm and a print-state transition answer different questions:
         suppressing the latter made real pause callbacks disappear.
         """
-        if self.filament_tracker is not None:
+        if self.subscription_active and self.filament_tracker is not None:
             self.filament_tracker.observe(processor.status, current)
         self._save(current, alerts)
 
@@ -213,6 +213,9 @@ class Monitor:
                 if not routes:
                     LOG.info("notification suppressed: kind=%s id=%s", item["kind"], item["id"])
             for item in self.store.pending_routes(limit=1, route=route):
+                if item["kind"] == "print_progress" and time.time() - item["created"] > 1800:
+                    self.store.route_suppressed(item["id"], route, "stale progress report")
+                    continue
                 url = self.settings.hermes_agent_url if route == "agent" else self.settings.hermes_url
                 if route == "agent":
                     handler = self.settings.handler_config.for_event(item["kind"])
@@ -247,6 +250,9 @@ class Monitor:
         self._heartbeat()
         self.last_status_received_at = time.monotonic()
         self.subscription_active = True
+        if self.reset_stall_clock and processor.previous:
+            processor.previous = {**processor.previous, "progress_changed_at": time.monotonic()}
+        self.reset_stall_clock = False
         self.field_seen.clear()
         self._remember_fields(snapshot)
         self._capabilities(snapshot)
@@ -280,22 +286,31 @@ class Monitor:
                                source_method=source_method, trigger="state_recovery")
             self.klippy_down_alerted = False
 
+    def _finish_shutdown(self, processor, hooks=None, cause=None):
+        if hooks is None and self.shutdown_query_since is None:
+            return
+        if hooks is None:
+            hooks = {"state": "shutdown", "state_message":
+                     "Kalico Shutdown event received; state query did not return details"}
+        # Partial queries are not subscription acknowledgements and must not
+        # overwrite persisted job identity with an empty print_stats object.
+        previous = processor.previous or {}
+        if not processor.has_snapshot:
+            processor.status = {"print_stats": {"state": previous.get("state", ""),
+                                "filename": previous.get("filename", "")}}
+            processor.has_snapshot = True
+        current, alerts = processor.apply_update(
+            {"webhooks": hooks}, time.monotonic(),
+            source_method=cause or "notify_klippy_shutdown",
+            trigger="state_query" if cause else "shutdown_query_timeout")
+        self._record(processor, current, alerts)
+        self.shutdown_query_since = None
+
     def _tick(self, processor: EventProcessor):
         self._heartbeat()
-        # Shutdown notification may have no payload. If query never returns,
-        # issue generic shutdown warning rather than suppressing the event.
         if (self.shutdown_query_since is not None and
                 time.monotonic() - self.shutdown_query_since >= 3):
-            self.shutdown_query_since = None
-            delta = {"webhooks": {"state": "shutdown", "state_message":
-                        "Kalico Shutdown event received; state query did not return details"}}
-            if processor.has_snapshot:
-                current, alerts = processor.apply_update(delta, time.monotonic(), source_method="notify_klippy_shutdown",
-                                                         trigger="shutdown_query_timeout")
-            else:
-                current, alerts = processor.set_snapshot(delta, time.monotonic(), source_method="notify_klippy_shutdown",
-                                                         trigger="shutdown_query_timeout")
-            self._record(processor, current, alerts)
+            self._finish_shutdown(processor)
         if self.subscription_active and processor.has_snapshot:
             connected = (
                 self.klippy_down_since is None
@@ -305,7 +320,10 @@ class Monitor:
             )
             fresh = time.monotonic()
             progress_seen = self.field_seen.get(("virtual_sdcard", "file_position"), float("-inf"))
-            current, alerts = processor.evaluate(fresh, allow_stall=connected and fresh - progress_seen <= 120)
+            stall_fresh = connected and 0 <= fresh - progress_seen <= 120
+            if not stall_fresh and processor.previous:
+                processor.previous = {**processor.previous, "progress_changed_at": fresh}
+            current, alerts = processor.evaluate(fresh, allow_stall=stall_fresh)
             self._record(processor, current, alerts)
             if self.reporter.evaluate(current, processor.status, time.time(), connected=connected):
                 LOG.info("periodic progress report queued")
@@ -388,6 +406,7 @@ class Monitor:
                     continue
                 if msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR,
                                 aiohttp.WSMsgType.CLOSE):
+                    self._finish_shutdown(processor)
                     raise ConnectionError("Moonraker WebSocket closed")
                 if msg.type != aiohttp.WSMsgType.TEXT:
                     self._tick(processor)
@@ -402,6 +421,7 @@ class Monitor:
                 if pending and reply_id == request_id:
                     # A subscription reply is the complete initial snapshot.
                     if "error" in packet:
+                        self._invalidate_subscription()
                         if subscription_index + 1 < len(subscriptions):
                             subscription_index += 1
                             requested_at = time.monotonic()
@@ -415,14 +435,18 @@ class Monitor:
                     snapshot = result.get("status") if isinstance(result, dict) else None
                     if not isinstance(snapshot, dict):
                         raise RuntimeError("Moonraker subscription returned no status")
-                    if not all(isinstance(snapshot.get(obj), dict) for obj in
-                               ("print_stats", "webhooks", "virtual_sdcard")):
+                    if (not all(isinstance(snapshot.get(obj), dict) for obj in
+                                ("print_stats", "webhooks", "virtual_sdcard"))
+                            or not isinstance(snapshot["print_stats"].get("state"), str)
+                            or not isinstance(snapshot["webhooks"].get("state"), str)):
                         raise RuntimeError("Moonraker subscription missing core objects")
                     pending = False
                     last_refresh = time.monotonic()
                     self._process_snapshot(processor, snapshot)
                     continue
                 if reply_id == 2:
+                    if self.subscription_active or (self.shutdown_query_since is None and self.klippy_down_since is None):
+                        continue
                     # A Klippy failure may reject object queries while Moonraker
                     # itself remains reachable. Keep the WebSocket connected.
                     if "error" in packet:
@@ -434,20 +458,15 @@ class Monitor:
                         update = {"webhooks": snapshot["webhooks"]}
                         cause = ("notify_klippy_shutdown" if self.shutdown_query_since is not None
                                  else self.disconnect_method)
-                        if processor.has_snapshot:
-                            current, alerts = processor.apply_update(update, time.monotonic(), source_method=cause,
-                                                                     trigger="state_query")
-                        else:
-                            current, alerts = processor.set_snapshot(update, time.monotonic(), source_method=cause,
-                                                                     trigger="state_query")
-                        self._record(processor, current, alerts)
                         hooks_state = snapshot["webhooks"].get("state")
+                        if hooks_state in {"shutdown", "error"}:
+                            self._finish_shutdown(processor, update["webhooks"], cause)
                         if hooks_state in {"shutdown", "error"}:
                             self.shutdown_query_since = None
                             self.klippy_down_since = None
                         elif hooks_state == "ready":
-                            self.shutdown_query_since = None
-                            self._klippy_recovered()
+                            # Recovery requires a fresh full subscription, not a partial query.
+                            self._finish_shutdown(processor)
                         elif hooks_state in {"disconnected", "startup"}:
                             self._klippy_disconnected()
                     continue
@@ -457,7 +476,8 @@ class Monitor:
                 if method == "notify_klippy_shutdown":
                     self._invalidate_subscription()
                     pending = False
-                    self.shutdown_query_since = time.monotonic()
+                    if self.shutdown_query_since is None:
+                        self.shutdown_query_since = time.monotonic()
                     await ws.send_json(QUERY)
                 elif method == "notify_klippy_disconnected":
                     self._invalidate_subscription()
@@ -465,8 +485,8 @@ class Monitor:
                     self._klippy_disconnected(method)
                     await ws.send_json(QUERY)
                 elif method == "notify_klippy_ready":
+                    self._finish_shutdown(processor)
                     self._invalidate_subscription()
-                    self.shutdown_query_since = None
                     rule_objects = await self._rule_objects(session, headers)
                     subscriptions = self._subscriptions(rule_objects)
                     subscription_index = 0

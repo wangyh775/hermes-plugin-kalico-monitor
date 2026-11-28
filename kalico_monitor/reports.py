@@ -17,7 +17,10 @@ META_KEY = "periodic_report_v1"
 def _number(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
     return number if math.isfinite(number) else None
 
 
@@ -55,8 +58,8 @@ def report_fields(status: dict) -> dict:
         "remaining": remaining_time(stats, sd),
         "nozzle": _temperature(_object(status, "extruder")),
         "bed": _temperature(_object(status, "heater_bed")),
-        "layer": layer_info.get("current_layer"),
-        "total_layers": layer_info.get("total_layer"),
+        "layer": _number(layer_info.get("current_layer")),
+        "total_layers": _number(layer_info.get("total_layer")),
     }
 
 

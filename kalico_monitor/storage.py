@@ -7,7 +7,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from .event_registry import metadata
+from .event_registry import metadata, utc_timestamp
 from .events import Alert
 
 
@@ -94,7 +94,8 @@ class Outbox:
                             json.dumps(alert.payload, ensure_ascii=False, allow_nan=False)
                             if alert.payload is not None else None,
                             json.dumps(metadata(alert.kind, alert.payload, alert.source_method,
-                                                alert.trigger), ensure_ascii=False)))
+                                                alert.trigger) | {"received_at": utc_timestamp(alert.received_at)},
+                                       ensure_ascii=False)))
         return digest
 
     def enqueue_source(self, alert: Alert) -> bool:
@@ -188,6 +189,13 @@ class Outbox:
             ORDER BY CASE a.severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,
                      a.created LIMIT ?""", (now, route, route, limit)).fetchall()
         return [dict(r) for r in rows]
+
+    def route_suppressed(self, alert_id: str, route: str, reason: str) -> None:
+        with self.conn:
+            self.conn.execute("""UPDATE alert_routes SET suppressed=?,last_error=?
+                WHERE alert_id=? AND route=? AND delivered IS NULL AND suppressed IS NULL""",
+                (time.time(), reason, alert_id, route))
+            self._finalize_routes(alert_id)
 
     def route_delivered(self, alert_id: str, route: str) -> None:
         with self.conn:

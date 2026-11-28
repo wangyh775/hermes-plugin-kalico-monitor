@@ -1,8 +1,9 @@
 """Moonraker JSON-RPC packet parsing and stateful alert classification."""
 from __future__ import annotations
 
+import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .event_registry import BUILTINS
@@ -21,6 +22,7 @@ class Alert:
     payload: dict | None = None
     source_method: str | None = None
     trigger: str | None = None
+    received_at: float = field(default_factory=time.time, compare=False)
 
     @property
     def id_key(self) -> str:

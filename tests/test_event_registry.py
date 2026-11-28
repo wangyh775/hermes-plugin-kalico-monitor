@@ -9,7 +9,7 @@ from kalico_monitor.storage import Outbox
 
 
 def test_registry_policy():
-    assert len(BUILTINS) == 21
+    assert len(BUILTINS) == 23
     assert len(SOURCE_TYPES) == 6
     assert routes_for("notify_history_changed", parse_modes("default=both")) == ()
     assert routes_for("notify_history_changed", parse_modes("notify_history_changed=agent")) == (

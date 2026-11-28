@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 SOURCE_TYPES = (
     "moonraker_native", "moonraker_lifecycle", "klipper_extension",
@@ -24,6 +25,7 @@ class EventDefinition:
     default_mode: str = "direct"
     schema_version: int = 1
     dedup_policy: str = "source_or_sequence"
+    payload_schema: str = "object_or_null"
 
 
 SEVERITIES = {
@@ -39,7 +41,10 @@ SEVERITIES = {
 def _group(names, source_type, source, source_object=None):
     return {
         kind: EventDefinition(kind, source_type, source, title, source_object,
-                              severity=SEVERITIES.get(kind, "info"))
+                              severity=SEVERITIES.get(kind, "info"),
+                              payload_schema=("filament_journal_v1" if source_type == "klipper_extension"
+                                              else "status_v1" if source_type == "moonraker_lifecycle"
+                                              else "object_or_null"))
         for kind, title in names.items()
     }
 
@@ -104,7 +109,7 @@ NATIVE = {
         method, "moonraker_native", "moonraker", title,
         native_method=method, explicit_only=True, forwardable=method in _FORWARD,
         severity=SEVERITIES.get(method, "info"), default_mode="off",
-        dedup_policy="identical_consecutive_payload_short_window",
+        dedup_policy="identical_consecutive_payload_short_window", payload_schema="rpc_params_v1",
     )
     for method, title in {**_FORWARD, **_CATALOG_ONLY}.items()
 }
@@ -117,7 +122,7 @@ def definition(kind: str, rules=()) -> EventDefinition | None:
     for rule in rules:
         if rule.name == kind:
             return EventDefinition(kind, "custom_rule", "moonraker", "自定义数值规则", rule.object,
-                                   severity=rule.severity, default_mode=rule.mode)
+                                   severity=rule.severity, default_mode=rule.mode, payload_schema="threshold_v1")
     return None
 
 
@@ -137,6 +142,10 @@ def metadata(kind: str, payload=None, observed_method=None, trigger=None) -> dic
         "source_method": observed_method,
         "trigger": trigger,
     }
+
+
+def utc_timestamp(value: float) -> str:
+    return datetime.fromtimestamp(value, timezone.utc).isoformat()
 
 
 def row_metadata(row: dict) -> dict:
