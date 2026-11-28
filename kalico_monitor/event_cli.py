@@ -6,6 +6,7 @@ import json
 import urllib.request
 
 from .monitor_cfg import LIFECYCLE_EVENTS
+from .filament_events import EVENTS as FILAMENT_EVENTS
 from .policy import parse_modes
 from .setup import default_path, read_env
 
@@ -16,6 +17,7 @@ DESCRIPTIONS = {
     "klippy_shutdown": "Klippy 停机", "klippy_disconnected": "Klippy 断开",
     "klippy_recovered": "Klippy 恢复", "moonraker_unreachable": "Moonraker 断开",
     "moonraker_recovered": "Moonraker 恢复", "nozzle_force_anomaly": "喷嘴力异常",
+    **{"filament_" + name: value[0] for name, value in FILAMENT_EVENTS.items()},
 }
 
 
