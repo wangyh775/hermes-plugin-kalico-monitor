@@ -51,7 +51,7 @@ LABELS = {
     "KALICO_PROGRESS_REPORT_MINUTES": "定时报告分钟数（0 关闭，5–1440）",
     "KALICO_WATCH_NOZZLE_FORCE": "喷嘴力监控（0 关闭，1 开启）",
     "HERMES_AGENT_WEBHOOK_URL": "Hermes Agent Webhook 地址（可选）",
-    "KALICO_EVENT_MODES": "事件策略（例如 klippy_shutdown=both,nozzle_force_anomaly=both）",
+    "KALICO_EVENT_MODES": "事件策略（例如 klippy_shutdown=both,filament_jam_confirmed=both）",
     "KALICO_STATUS_FIELDS": "状态显示字段（逗号分隔 state,file,progress,nozzle,bed,chamber,elapsed,remaining）",
     "KALICO_CHAMBER_OBJECT": "腔体温度对象（留空自动发现；如 temperature_sensor chamber）",
 }
@@ -230,12 +230,14 @@ def save_local_config(path: Path, values: dict[str, str]) -> None:
     replacements still requires recovery from the retained backups.
     """
     from .monitor_cfg import cfg_path, render_cfg, save_cfg
+    from .custom_config import preserved_extension_text
 
     values = validate_all(values)
     cfg = cfg_path(path)
     if path == cfg:
         raise ValueError("monitor.env 和 monitor.cfg 不能是同一文件")
     render_cfg(values)  # Validate the second file before modifying either.
+    preserved_extension_text(cfg)  # Validate extensions before writing either file.
     targets = (cfg, path)
     for target in targets:
         if target.is_symlink():

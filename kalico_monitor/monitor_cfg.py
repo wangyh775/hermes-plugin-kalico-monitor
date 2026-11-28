@@ -27,7 +27,7 @@ LIFECYCLE_EVENTS = (
     "started", "paused", "resumed", "complete", "cancelled", "error",
     "stalled", "print_progress", "klippy_shutdown", "klippy_disconnected",
     "klippy_recovered", "moonraker_unreachable", "moonraker_recovered",
-    "nozzle_force_anomaly", "filament_jam_detected", "filament_runout_detected",
+    "filament_jam_detected", "filament_runout_detected",
     "filament_diagnosis_result", "filament_jam_confirmed", "filament_z_adjusted",
     "filament_recovery_started", "filament_recovery_verified", "filament_recovery_failed",
 )
@@ -60,8 +60,10 @@ def read_cfg(path: Path) -> dict[str, str]:
             parser.read_file(stream)
     except (configparser.Error, UnicodeError) as exc:
         raise ValueError(f"Monitor CFG 格式错误：{path}: {exc}") from exc
-    if parser.defaults() or set(parser.sections()) - {"monitor", "events", "hermes", "printer", "status"}:
-        raise ValueError("monitor.cfg 只支持 [monitor]、[events]、[hermes]、[printer] 和 [status]，不支持 [DEFAULT] 或未知节")
+    if parser.defaults():
+        raise ValueError("monitor.cfg 不支持 [DEFAULT] 节")
+    from .custom_config import load_extensions
+    load_extensions(path)  # Validate extensible message and event sections.
 
     from .setup import validate_field  # Deferred to keep the parser import-light.
     values: dict[str, str] = {}
@@ -129,7 +131,8 @@ def render_cfg(values: dict[str, str]) -> str:
 
 def save_cfg(path: Path, values: dict[str, str]) -> None:
     """Atomic 0600 replacement, failing closed on symlinks or invalid values."""
-    content = render_cfg(values)
+    from .custom_config import preserved_extension_text
+    content = render_cfg(values) + preserved_extension_text(path)
     if path.is_symlink():
         raise ValueError(f"拒绝覆盖符号链接形式的 Monitor CFG：{path}")
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)

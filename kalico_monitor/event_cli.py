@@ -6,6 +6,8 @@ import json
 import urllib.request
 
 from .filament_events import EVENTS as FILAMENT_EVENTS
+from .custom_config import load_extensions
+from .monitor_cfg import cfg_path
 from .monitor_cfg import LIFECYCLE_EVENTS
 from .policy import parse_modes
 from .setup import default_path, read_env
@@ -16,7 +18,7 @@ DESCRIPTIONS = {
     "stalled": "打印停滞", "print_progress": "定时进度",
     "klippy_shutdown": "Klippy 停机", "klippy_disconnected": "Klippy 断开",
     "klippy_recovered": "Klippy 恢复", "moonraker_unreachable": "Moonraker 断开",
-    "moonraker_recovered": "Moonraker 恢复", "nozzle_force_anomaly": "喷嘴力异常",
+    "moonraker_recovered": "Moonraker 恢复",
     **{"filament_" + name: value[0] for name, value in FILAMENT_EVENTS.items()},
 }
 
@@ -29,8 +31,9 @@ def main(argv: list[str]) -> None:
     parser.add_argument("--file", type=type(default_path()), default=default_path())
     args = parser.parse_args(argv)
     values = read_env(args.file.expanduser())
+    message_fields, custom_rules = load_extensions(cfg_path(args.file.expanduser()))
     if args.command == "test":
-        if args.kind not in LIFECYCLE_EVENTS:
+        if args.kind not in LIFECYCLE_EVENTS and args.kind not in {r.name for r in custom_rules}:
             parser.error("test requires a registered event name")
         import asyncio
         import time
@@ -42,7 +45,11 @@ def main(argv: list[str]) -> None:
         from .policy import routes_for
         from .setup import validate_all
         values = validate_all(values)
-        routes = routes_for(args.kind, parse_modes(values["KALICO_EVENT_MODES"]))
+        modes = parse_modes(values["KALICO_EVENT_MODES"])
+        for rule in custom_rules:
+            if rule.name not in modes:
+                modes[rule.name] = rule.mode
+        routes = routes_for(args.kind, modes)
         if not routes:
             print("事件已关闭，不发送测试通知")
             return
@@ -54,7 +61,9 @@ def main(argv: list[str]) -> None:
                     url = values["HERMES_AGENT_WEBHOOK_URL" if route == "agent" else "HERMES_WEBHOOK_URL"]
                     if not url:
                         raise ValueError(f"Missing {route} webhook")
-                    result = await deliver(session, url, values["HERMES_WEBHOOK_SECRET"], values["KALICO_PRINTER_NAME"], alert, route)
+                    result = await deliver(session, url, values["HERMES_WEBHOOK_SECRET"],
+                                           values["KALICO_PRINTER_NAME"], alert, route,
+                                           message_fields=message_fields)
                     print(route, result.get("status"))
         asyncio.run(send())
         return
@@ -84,10 +93,14 @@ def main(argv: list[str]) -> None:
         return
     if args.command == "events":
         modes = parse_modes(values["KALICO_EVENT_MODES"])
+        for rule in custom_rules:
+            modes.setdefault(rule.name, rule.mode)
         for name in LIFECYCLE_EVENTS:
             mode = modes.get(name, modes["default"])
             print(f"{name:25} {mode:7} {DESCRIPTIONS[name]}")
-        for name in modes.keys() - set(LIFECYCLE_EVENTS) - {"default"}:
+        for rule in custom_rules:
+            print(f"{rule.name:25} {modes[rule.name]:7} 自定义 Moonraker 阈值事件")
+        for name in modes.keys() - set(LIFECYCLE_EVENTS) - {r.name for r in custom_rules} - {"default"}:
             print(f"{name:25} {modes[name]:7} 未注册，仅配置路由")
         return
     url = values["MOONRAKER_URL"].rstrip("/") + "/printer/objects/list"
