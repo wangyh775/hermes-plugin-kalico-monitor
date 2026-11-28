@@ -228,7 +228,7 @@ def restore(path: Path, original: bytes | None) -> None:
 def service_text(root: Path, env_file: Path) -> str:
     return (f"[Unit]\nDescription=Kalico Monitor\nWants=network-online.target\n"
             f"After=network-online.target\n\n[Service]\nType=simple\n"
-            f"EnvironmentFile={env_file}\nWorkingDirectory={root}\n"
+            f"EnvironmentFile={env_file}\nEnvironment=KALICO_MONITOR_ENV_FILE={env_file}\nWorkingDirectory={root}\n"
             f"ExecStart={root / '.venv/bin/python'} -m kalico_monitor.monitor\n"
             f"Restart=always\nRestartSec=5\nNoNewPrivileges=true\n"
             f"PrivateTmp=true\n\n[Install]\nWantedBy=default.target\n")
@@ -544,7 +544,7 @@ def reconfigure_menu(values: dict[str, str], ask=input, out=print,
         for index, key in enumerate(EDITABLE[:9], 1):
             out(f"[{index}] {LABELS[key]}: {masked(key, pending.get(key, ''))}")
         out("[10] 关键故障策略（direct / agent / both）")
-        out("[12] /kalico status 选择显示字段")
+        out("[12] /kalico status 选择显示字段  [14] 逐事件通知策略")
         out(f"[13] 腔体温度对象：{masked('KALICO_CHAMBER_OBJECT', pending.get('KALICO_CHAMBER_OBJECT', ''))}")
         out("[11] 确认并保存   [0] 取消")
         choice = ask("请选择：").strip()
@@ -563,7 +563,7 @@ def reconfigure_menu(values: dict[str, str], ask=input, out=print,
                 except ValueError as exc:
                     out(f"输入无效：{exc}")
             continue
-        if choice == "8":
+        if choice == "14":
             from .monitor_cfg import edit_events
             pending["KALICO_EVENT_MODES"] = edit_events(pending["KALICO_EVENT_MODES"], ask, out)
             continue
