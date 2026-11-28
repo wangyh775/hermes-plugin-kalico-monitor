@@ -25,7 +25,7 @@ Kalico + Moonraker --LAN HTTP/WS--> Kalico Monitor (systemd + SQLite)
                                   Hermes 插件 -----> Moonraker 只读查询
 ```
 
-**可以同机，也可以局域网分机部署**。Monitor 与 Hermes Gateway 建议同机；打印机与 AI 主机只需网络互通，不必同网段。打印机本地独立负责加热、运动、故障保护及 PR #13 的可选暂停/首层 Z 修正；本项目**不发送任何 G-code 或打印机控制指令**。
+**可以同机，也可以局域网分机部署**。Monitor 与 Hermes Gateway 建议同机；打印机与 AI 主机只需网络互通，不必同网段。打印机本地独立负责加热、运动、故障保护及 filament_force 的暂停/首层 Z 修正；本项目**不发送任何 G-code 或打印机控制指令**。
 
 ## 功能
 
@@ -36,11 +36,11 @@ Kalico + Moonraker --LAN HTTP/WS--> Kalico Monitor (systemd + SQLite)
 | SQLite 告警持久化、失败重试和去重 | 已实现 |
 | 打印过程定时状态报告 | 可选，默认关闭 |
 | 停滞检测 | 可选，默认关闭 |
-| 自定义 `nozzle_force_monitor` 疑似堵头告警 | 可选，默认关闭；依赖 [Kalico PR #13](https://github.com/wangyh775/kalico/pull/13) |
+| `filament_force` 堵头诊断与恢复事件 | 可选，默认关闭；依赖 klipper-filament-force |
 | `/kalico status/temp/force/alerts/health` 零 LLM 查询 | 已实现；由 Hermes 授权，可选附加聊天白名单 |
 | 按事件设置 `direct` / `agent` / `both` | 已实现，默认全部 `direct` |
 | SQLite 双路投递、独立重试与幂等 ID | 已实现 |
-| 通用 `events.yaml` 条件规则、多打印机聚合、AI 自动控制 | 尚未实现 |
+| `monitor.cfg` 数值阈值事件、Direct 消息字段配置 | 已实现（只读；详见事件路由文档） |
 
 ## 自定义 /kalico status 显示内容
 
@@ -87,7 +87,7 @@ bash install.sh --check
 bash install.sh --reconfigure
 ```
 
-向导读取当前 `monitor.env`，展示已有值并允许逐项修改 Moonraker 地址、打印机名称、API Key、喷嘴力开关、报告周期、停滞检测、断线阈值、事件路由及可选聊天限制。也可以只更改 `klippy_shutdown` / `nozzle_force_anomaly` 的 `direct/agent/both` 模式，其他事件规则会保留。按回车保留原值，选择取消不会修改文件；提交后自动备份、同步 Hermes 路由及重启服务，并重新测试连通性。修改飞书与大模型本身仍由 Hermes 负责。详见 [Linux 安装与重配置](docs/ONE_CLICK_INSTALL.zh-CN.md)。
+向导读取当前 `monitor.env`，展示已有值并允许逐项修改 Moonraker 地址、打印机名称、API Key、喷嘴力开关、报告周期、停滞检测、断线阈值、事件路由及可选聊天限制。也可以只更改 `klippy_shutdown` / `filament_jam_confirmed` 的 `direct/agent/both` 模式，其他事件规则会保留。按回车保留原值，选择取消不会修改文件；提交后自动备份、同步 Hermes 路由及重启服务，并重新测试连通性。修改飞书与大模型本身仍由 Hermes 负责。详见 [Linux 安装与重配置](docs/ONE_CLICK_INSTALL.zh-CN.md)。
 
 ## 手动安装（Linux）
 
@@ -120,14 +120,14 @@ KALICO_STALL_MINUTES=0
 KALICO_PROGRESS_REPORT_MINUTES=30
 KALICO_WATCH_NOZZLE_FORCE=0
 HERMES_AGENT_WEBHOOK_URL=http://127.0.0.1:8644/webhooks/kalico-analysis
-KALICO_EVENT_MODES=klippy_shutdown=both,nozzle_force_anomaly=both
+KALICO_EVENT_MODES=klippy_shutdown=both,filament_jam_confirmed=both
 ```
 
 `192.168.1.100` 是示例 IP。默认关闭定时报告、喷嘴力监控和 LLM 路由；上例主动开启 30 分钟报告及两种异常的 `both` 模式。**Agent 路由和地址必须同步在 Hermes 中配置，否则对应事件无法正常发送**。详细默认值、参数限制和分机部署见 [配置参考](docs/CONFIGURATION.zh-CN.md)。
 
-## 自定义喷嘴力模块兼容性
+## filament_force 模块兼容性
 
-当前 Monitor 通过 `triggered` 和 `trigger_count` 识别 [Kalico PR #13](https://github.com/wangyh775/kalico/pull/13) 的疑似堵头暂停事件。**最新 PR #13 还支持首层 Z 偏移，但成功修正或仅记录回弹并不会自动产生独立飞书告警。** `/kalico force` 也尚未完整展示首层控制状态。详见 [事件与命令](docs/EVENTS.zh-CN.md)。
+Monitor 通过 `filament_force.events` 获取结构化诊断事件；旧 `nozzle_force_monitor` 告警源已退役。`/kalico force` 改为读取新模块状态。
 
 ## 测试与安全
 
@@ -148,4 +148,8 @@ KALICO_EVENT_MODES=klippy_shutdown=both,nozzle_force_anomaly=both
 
 ### filament_force 事件接入
 
-启用 KALICO_WATCH_NOZZLE_FORCE=1 后兼容旧 nozzle_force_monitor 和新 filament_force.events。支持堵头、断料、诊断结果、确认高阻力、Z 补偿和恢复状态事件。每条事件携带唯一 ID，Monitor 保存 SQLite payload 并在 Hermes 签名 Webhook 的 event 字段转发受力窗口等结构化数据。详见 [事件文档](docs/EVENTS.zh-CN.md)。
+启用 KALICO_WATCH_NOZZLE_FORCE=1 后订阅 `filament_force.events`（不再订阅旧 `nozzle_force_monitor`）。支持堵头、断料、诊断结果、确认高阻力、Z 补偿和恢复状态事件。每条事件携带唯一 ID，Monitor 保存 SQLite payload 并在 Hermes 签名 Webhook 的 event 字段转发受力窗口等结构化数据。详见 [事件文档](docs/EVENTS.zh-CN.md)。
+
+### 自定义事件与 Direct 消息字段
+
+新增 `[message]`、`[message 事件名]`、`[event 事件名]` 配置节：分别用于直推字段、单事件字段和只读 Moonraker 阈值规则。详情参见 [事件路由与通知模板](docs/EVENT_ROUTER.zh-CN.md)。Monitor 只生成及路由事件，不执行 Kiln/Moonraker 打印控制。

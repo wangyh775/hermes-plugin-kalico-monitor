@@ -42,6 +42,24 @@ def _duration(seconds: Any) -> str:
     return f"{minutes // 60} 小时 {minutes % 60} 分钟"
 
 
+def report_fields(status: dict) -> dict:
+    """Structured report data for configurable Direct fields."""
+    stats = _object(status, "print_stats")
+    sd = _object(status, "virtual_sdcard")
+    progress = _number(sd.get("progress"))
+    from .status_fields import remaining_time
+    layer_info = _object(stats, "info")
+    return {
+        "progress": f"{progress * 100:.1f}%" if progress is not None and 0 <= progress <= 1 else "—",
+        "elapsed": _duration(stats.get("print_duration")),
+        "remaining": remaining_time(stats, sd),
+        "nozzle": _temperature(_object(status, "extruder")),
+        "bed": _temperature(_object(status, "heater_bed")),
+        "layer": layer_info.get("current_layer"),
+        "total_layers": layer_info.get("total_layer"),
+    }
+
+
 def report_detail(status: dict) -> str:
     """Format observed Moonraker values only; never infer print quality."""
     stats = _object(status, "print_stats")
@@ -140,6 +158,7 @@ class PeriodicReporter:
             filename=filename,
             detail=report_detail(status),
             severity="info",
+            payload=report_fields(status),
             sequence=sequence,
         )
         # One SQLite transaction: durable dedupe key + next due + notification.

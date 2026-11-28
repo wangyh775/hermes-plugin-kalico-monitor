@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
+
+from .custom_config import EventRule, load_extensions
 
 
 @dataclass(frozen=True)
@@ -21,12 +23,16 @@ class Settings:
     watch_nozzle_force: bool = False
     hermes_agent_url: str = ""
     event_modes: str = ""
+    message_fields: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    event_rules: tuple[EventRule, ...] = ()
 
     @classmethod
     def load(cls) -> "Settings":
         from .monitor_cfg import cfg_path, read_cfg
         env_path = Path(os.getenv("KALICO_MONITOR_ENV_FILE", "~/.config/kalico-monitor/monitor.env")).expanduser()
-        overrides = read_cfg(cfg_path(env_path))
+        path = cfg_path(env_path)
+        overrides = read_cfg(path)
+        message_fields, event_rules = load_extensions(path)
 
         def get(key: str, default: str = "") -> str:
             return overrides.get(key, os.getenv(key, default))
@@ -70,7 +76,8 @@ class Settings:
                    disconnect_seconds=max(5, int(get("KALICO_DISCONNECT_SECONDS", "25"))),
                    stall_minutes=max(0, int(get("KALICO_STALL_MINUTES", "0"))),
                    progress_report_minutes=report_minutes, watch_nozzle_force=watch_force,
-                   hermes_agent_url=agent_url, event_modes=modes)
+                   hermes_agent_url=agent_url, event_modes=modes,
+                    message_fields=message_fields, event_rules=event_rules)
 
     @property
     def ws_url(self) -> str:

@@ -16,11 +16,10 @@ from .config import Settings
 from .events import Alert, EventProcessor
 from .filament_events import OBJECT as FILAMENT_OBJECT
 from .filament_events import FilamentEventTracker
-from .force import OBJECT as FORCE_OBJECT
-from .force import ForceEventTracker
 from .notifier import deliver
 from .policy import parse_modes, routes_for
 from .reports import PeriodicReporter
+from .rule_engine import RuleEngine
 from .storage import Outbox
 
 LOG = logging.getLogger("kalico-monitor")
@@ -29,14 +28,17 @@ SUBSCRIBE = {"jsonrpc": "2.0", "method": "printer.objects.subscribe",
                                     "virtual_sdcard": None, "extruder": None,
                                     "heater_bed": None}}, "id": 1}
 def subscribe_request(include_force: bool = False, *, filament_only: bool = False,
-                      legacy_only: bool = False) -> dict:
-    """Optional objects are opt-in; use base subscription on unsupported Klippy."""
+                      legacy_only: bool = False, extra_objects: tuple[str, ...] = ()) -> dict:
+    """Only subscribe to filament_force, plus validated custom Moonraker objects.
+
+    The old compatibility keyword arguments are accepted but no longer
+    subscribe to the obsolete nozzle_force_monitor object.
+    """
     objects = dict(SUBSCRIBE["params"]["objects"])
     if include_force:
-        if not filament_only:
-            objects[FORCE_OBJECT] = None
-        if not legacy_only:
-            objects[FILAMENT_OBJECT] = ["events"]
+        objects[FILAMENT_OBJECT] = ["events"]
+    for name in extra_objects:
+        objects.setdefault(name, None)
     return {**SUBSCRIBE, "params": {"objects": objects}}
 
 
@@ -48,6 +50,9 @@ class Monitor:
     def __init__(self, settings: Settings, store: Outbox):
         self.settings = settings
         self.event_modes = parse_modes(settings.event_modes)
+        # Explicit [events] overrides take precedence over an event rule's mode.
+        for rule in settings.event_rules:
+            self.event_modes.setdefault(rule.name, rule.mode)
         self.store = store
         cancelled = store.reconcile_policy(self.event_modes)
         if cancelled:
@@ -56,8 +61,8 @@ class Monitor:
         self.last_heartbeat_at = float("-inf")
         self.last_status_received_at: float | None = None
         self.reporter = PeriodicReporter(store, settings.progress_report_minutes)
-        self.force_tracker = ForceEventTracker(store) if settings.watch_nozzle_force else None
         self.filament_tracker = FilamentEventTracker(store) if settings.watch_nozzle_force else None
+        self.rule_engine = RuleEngine(store, settings.event_rules)
         self.last_stored_state = store.get_state()
         self.klippy_down_since: float | None = None
         self.klippy_down_alerted = False
@@ -86,8 +91,6 @@ class Monitor:
         A force alarm and a print-state transition answer different questions:
         suppressing the latter made real pause callbacks disappear.
         """
-        if self.force_tracker is not None:
-            self.force_tracker.observe(processor.status, current)
         if self.filament_tracker is not None:
             self.filament_tracker.observe(processor.status, current)
         self._save(current, alerts)
@@ -127,7 +130,8 @@ class Monitor:
                     continue
                 try:
                     await deliver(session, url, self.settings.hermes_secret,
-                                  self.settings.printer, item, route=route)
+                                  self.settings.printer, item, route=route,
+                                  message_fields=self.settings.message_fields)
                 except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
                     self.store.route_failed(item["id"], route,
                                             type(exc).__name__ + ": " + str(exc)[:100])
@@ -194,6 +198,13 @@ class Monitor:
             )
             if self.reporter.evaluate(current, processor.status, time.time(), connected=connected):
                 LOG.info("periodic progress report queued")
+            if self.rule_engine.evaluate(
+                processor.status, time.time(),
+                connected=connected and current.get("klippy_state") == "ready",
+                generation=current.get("generation", 0),
+                filename=current.get("filename", ""),
+            ):
+                LOG.info("custom rule alert queued")
         if (self.klippy_down_since is not None and not self.klippy_down_alerted
                 and time.monotonic() - self.klippy_down_since >= self.settings.disconnect_seconds):
             self.klippy_down_id = self._new_incident("klippy_incidents")
@@ -201,16 +212,50 @@ class Monitor:
                                "Moonraker has lost its connection to Kalico")
             self.klippy_down_alerted = True
 
+    async def _rule_objects(self, session: aiohttp.ClientSession, headers: dict) -> tuple[str, ...]:
+        """Only subscribe to existing optional objects; never block base monitoring."""
+        desired = self.rule_engine.objects
+        if not desired:
+            return ()
+        try:
+            async with session.get(self.settings.moonraker_url + "/printer/objects/list",
+                                   headers=headers, timeout=aiohttp.ClientTimeout(total=6)) as response:
+                response.raise_for_status()
+                body = await response.json()
+            available = set(body.get("result", {}).get("objects", []))
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, TypeError, AttributeError):
+            LOG.warning("custom rule object discovery failed; base monitoring continues")
+            return ()
+        missing = sorted(set(desired) - available)
+        for name in missing:
+            LOG.warning("custom rule object unavailable: %s", name)
+        return tuple(name for name in desired if name in available)
+
+    def _subscriptions(self, extras: tuple[str, ...]) -> list[dict]:
+        force = self.settings.watch_nozzle_force
+        candidates = [
+            subscribe_request(force, extra_objects=extras),
+            subscribe_request(force),
+            subscribe_request(False, extra_objects=extras),
+            subscribe_request(False),
+        ]
+        result = []
+        for item in candidates:
+            if item not in result:
+                result.append(item)
+        return result
+
     async def _listen(self, session: aiohttp.ClientSession):
         headers = {"X-Api-Key": self.settings.moonraker_api_key} if self.settings.moonraker_api_key else {}
         processor = EventProcessor(previous=self.store.get_state(),
                                    stall_minutes=self.settings.stall_minutes)
+        rule_objects = await self._rule_objects(session, headers)
+        subscriptions = self._subscriptions(rule_objects)
         async with session.ws_connect(self.settings.ws_url, headers=headers,
                                       heartbeat=20) as ws:
             LOG.info("Moonraker connected; subscribing to status")
-            include_force = self.settings.watch_nozzle_force
-            force_variant = 0
-            await ws.send_json(subscribe_request(include_force))
+            subscription_index = 0
+            await ws.send_json(subscriptions[subscription_index])
             requested_at = time.monotonic()
             while True:
                 if not processor.has_snapshot and time.monotonic() - requested_at > 20:
@@ -236,14 +281,12 @@ class Monitor:
                 if reply_id == 1:
                     # A subscription reply is the complete initial snapshot.
                     if "error" in packet:
-                        if include_force:
-                            force_variant += 1
-                            include_force = force_variant < 3
+                        if subscription_index + 1 < len(subscriptions):
+                            subscription_index += 1
                             requested_at = time.monotonic()
-                            LOG.warning("Optional force subscription rejected; trying variant %s", force_variant)
-                            await ws.send_json(subscribe_request(include_force,
-                                filament_only=force_variant == 1,
-                                legacy_only=force_variant == 2))
+                            LOG.warning("Optional subscription rejected; trying variant %s",
+                                        subscription_index)
+                            await ws.send_json(subscriptions[subscription_index])
                             continue
                         raise RuntimeError("Moonraker subscription rejected")
                     result = packet.get("result", {})
@@ -290,10 +333,9 @@ class Monitor:
                 elif method == "notify_klippy_ready":
                     self.last_status_received_at = None
                     self._klippy_recovered()
-                    include_force = self.settings.watch_nozzle_force
-                    force_variant = 0
+                    subscription_index = 0
                     requested_at = time.monotonic()
-                    await ws.send_json(subscribe_request(include_force))
+                    await ws.send_json(subscriptions[subscription_index])
                 else:
                     current, alerts = processor.handle_packet(packet, time.time())
                     if current is not None:

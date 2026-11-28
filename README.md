@@ -46,7 +46,7 @@ The printer and AI host may be separate machines on a mutually reachable LAN; th
 - SQLite outbox with stable alert IDs, retries, and deduplication; signed Hermes V2 Webhook with `deliver_only: true` for normal zero-LLM notifications.
 - Optional print-progress reports (`KALICO_PROGRESS_REPORT_MINUTES=30`; default 0/off).
 - Optional stall detection (`KALICO_STALL_MINUTES`; default 0/off).
-- Optional custom Kalico [PR #13](https://github.com/wangyh775/kalico/pull/13) nozzle-force anomaly bridge (`KALICO_WATCH_NOZZLE_FORCE=1`; default off).
+- Current `klipper-filament-force` event bridge (`watch_nozzle_force=1`); legacy nozzle-force alarms removed.
 - Hermes-authorized zero-LLM `/kalico status`, `temp`, `force`, `alerts`, `health` and `help` slash commands, plus three read-only Agent tools.
 
 - Per-event `direct`, `agent`, or `both` delivery via `KALICO_EVENT_MODES`, with an optional second Hermes Agent webhook. Durable independent retry records in SQLite and route-specific idempotency IDs; the default remains `direct`.
@@ -104,4 +104,6 @@ PR #7 (configuration wizard) and PR #8 (per-event Hermes routing) have been merg
 
 ### filament_force event bridge
 
-Enable KALICO_WATCH_NOZZLE_FORCE=1 to subscribe to the legacy nozzle_force_monitor and new filament_force.events journal. JAM, runout, diagnosis, confirmed resistance, Z adjustment and recovery events have independent routing. SQLite deduplicates source event IDs and retains the structured payload, forwarded in the signed Hermes webhook as event. Force traces are bounded peak-preserving samples, not full-rate ADC recordings. See [event protocol](https://github.com/wangyh775/klipper-filament-force/blob/feature/diagnostic-recovery-fsm/docs/events.md).
+Enable KALICO_WATCH_NOZZLE_FORCE=1 to subscribe to the current filament_force.events journal. JAM, runout, diagnosis, confirmed resistance, Z adjustment and recovery events have independent routing. SQLite deduplicates source event IDs and retains the structured payload, forwarded in the signed Hermes webhook as event. Force traces are bounded peak-preserving samples, not full-rate ADC recordings. See [event protocol](https://github.com/wangyh775/klipper-filament-force/blob/feature/diagnostic-recovery-fsm/docs/events.md).
+
+Per-event Direct fields and read-only Moonraker threshold rules: [Configuration guide](docs/EVENT_ROUTER.zh-CN.md).

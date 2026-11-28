@@ -19,10 +19,10 @@ HERMES_WEBHOOK_URL=http://127.0.0.1:8644/webhooks/kalico-alert
 HERMES_AGENT_WEBHOOK_URL=http://127.0.0.1:8644/webhooks/kalico-analysis
 HERMES_WEBHOOK_SECRET=<同步到两条 Hermes 路由的同一随机密钥>
 KALICO_ALLOWED_CHAT_IDS=
-KALICO_EVENT_MODES=klippy_shutdown=both,nozzle_force_anomaly=both
+KALICO_EVENT_MODES=klippy_shutdown=both,filament_jam_confirmed=both
 ```
 
-也可运行 `kalico-monitor config`，在菜单 8 设置分析端点与事件模式。事件配置写在本地 `monitor.env` 中，避免新增 YAML 解析依赖。语法为逗号分隔的 `kind=mode`，支持 `default=direct|agent|both`；未知事件默认直接发送。建议 `started=direct,resumed=direct,complete=direct,paused=direct,print_progress=direct,klippy_shutdown=both,nozzle_force_anomaly=both`。
+也可运行 `kalico-monitor config`，在菜单 8 设置分析端点与事件模式。事件配置写在本地 `monitor.env` 中，避免新增 YAML 解析依赖。语法为逗号分隔的 `kind=mode`，支持 `default=direct|agent|both`；未知事件默认直接发送。建议 `started=direct,resumed=direct,complete=direct,paused=direct,print_progress=direct,klippy_shutdown=both,filament_jam_confirmed=both`。
 
 - **direct**：使用 `kalico-alert`，Hermes `deliver_only: true`，不触发 LLM。
 - **agent**：使用 `kalico-analysis`，Hermes `deliver_only: false`，由 Agent 分析后发送。
@@ -51,7 +51,7 @@ Monitor 基于 Moonraker `print_stats.state` 状态变化自动生成事件：
 
 **首次连接恰好已在 printing 状态时不虚构开始事件**：只有观察到从非打印中切换到 printing 才发送 `started`。如果开始、结束发生在 Moonraker WebSocket 未连接的间隙，只能根据下一份快照尝试推断，不保证补出所有丢失的中间状态。
 
-**力异常触发自动暂停时**，`nozzle_force_anomaly` 和 `paused` 是两条独立通知：前者是传感器异常，后者是实际打印状态变化。不再静默丢弃 `paused`。配置 `KALICO_EVENT_MODES` 时可分别设置两个事件的 direct/agent/both。
+**新堵头模块触发暂停时**，`filament_jam_confirmed` 和 `paused` 是两种独立事件：前者是 Kalico 插件诊断结果，后者是 Monitor 观察到的打印状态变化。可以为两者设置不同通知策略。
 
 如果没有收到消息，先在服务日志中寻找 `queued started/paused/resumed/complete`，判断是否进入 SQLite 队列，再检查 `notification accepted: kind=... route=...` 或 `notification retry scheduled: kind=...`。`accepted` 代表 Hermes 对该 Webhook 支路给出有效确认，并不证明人在飞书阅读。
 
@@ -64,3 +64,6 @@ Monitor 基于 Moonraker `print_stats.state` 状态变化自动生成事件：
 5. 验证 Hermes 飞书准入与斜杠命令限制；不要把 `KALICO_ALLOWED_CHAT_IDS` 误当作 webhook 投递目标。
 
 **限制**：Hermes 的实际配置字段与版本兼容性应以部署实例为准。一键安装与二次配置会安全合并 Hermes 的两条 Kalico 路由；仍未实现 Agent 任务完成回执跟踪。Agent 路由配置 `toolsets: [kalico_monitor]`，仅使用此插件的只读诊断工具。
+
+
+新的 `[message]` Direct 字段选择与 `[event NAME]` 自定义数值规则参见 [事件路由与消息配置](EVENT_ROUTER.zh-CN.md)。

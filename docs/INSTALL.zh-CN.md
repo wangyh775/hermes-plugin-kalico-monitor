@@ -72,7 +72,7 @@ HERMES_WEBHOOK_SECRET=请替换为随机密钥
 KALICO_MONITOR_DB=/home/YOUR_USER/.local/state/kalico-monitor/alerts.sqlite3
 KALICO_ALLOWED_CHAT_IDS=
 HERMES_AGENT_WEBHOOK_URL=http://127.0.0.1:8644/webhooks/kalico-analysis
-KALICO_EVENT_MODES=klippy_shutdown=both,nozzle_force_anomaly=both
+KALICO_EVENT_MODES=klippy_shutdown=both,filament_jam_confirmed=both
 KALICO_DISCONNECT_SECONDS=25
 KALICO_STALL_MINUTES=0
 KALICO_PROGRESS_REPORT_MINUTES=30
@@ -139,19 +139,9 @@ sudo loginctl enable-linger "$USER"
 
 如果采用 `deploy/kalico-monitor.service.example` 安装**系统级服务**，则使用 `sudo systemctl ...` 和 `sudo journalctl -u ...`；不要同时运行系统级与用户级服务。修改 `monitor.env` 后需重启相应服务，当前没有动态热重载。
 
-## 6. 可选：Kalico PR #13 自定义喷嘴力检测
+## 6. 可选：klipper-filament-force 事件接入
 
-先在 Kalico 打印机上安装、配置并验证 [Kalico PR #13](https://github.com/wangyh775/kalico/pull/13) 的 `[nozzle_force_monitor]`；该 PR 仍处于 Draft，参数必须经实机标定。可用以下只读查询验证对象存在：
-
-~~~bash
-curl -fsS -X POST http://192.168.1.100:7125/printer/objects/query \
-  -H 'Content-Type: application/json' \
-  -d '{"objects":{"nozzle_force_monitor":null}}'
-~~~
-
-然后在 Monitor 配置中启用 `KALICO_WATCH_NOZZLE_FORCE=1` 并重启服务。对象不存在时 Monitor 会尝试回退基础订阅；`/kalico force` 只读查询不依赖 Monitor 的该开关，但要求 Kalico 端存在该对象。
-
-**重要的实际限制**：最新 PR #13 支持 `first_layer_action: z_adjust`、`normal_layer_action: pause` 等分层动作；目前 Hermes 桥接仅在 `triggered=true` 且 `trigger_count` 增加时产生 `nozzle_force_anomaly`。在 PR #13 当前实现中，这主要对应本地请求暂停，**普通 `log` 回弹和成功执行的首层 Z 偏移不会各自触发该告警**。现有 `/kalico force` 也尚未完整展示 `adjust_count`、`auto_z_total` 等首层控制状态。不能将它误认为已覆盖全部自定义事件。详见 [事件与查询](EVENTS.zh-CN.md)。
+在打印机上安装并确认 `filament_force` Moonraker 状态对象存在后，将 `monitor.cfg` 的 `watch_nozzle_force` 设置为 `1`。Monitor 只读订阅 `filament_force.events`；旧的 `nozzle_force_monitor` 不再用于生成告警。详见 [事件配置](EVENT_ROUTER.zh-CN.md)。
 
 ## 7. 验收与安全
 

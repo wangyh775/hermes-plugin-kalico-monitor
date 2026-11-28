@@ -9,8 +9,12 @@ from typing import Any
 
 import aiohttp
 
+from .custom_config import DEFAULT_MESSAGE_FIELDS
+from .message_templates import render_direct_message
 
-def make_request(alert: dict, secret: str, printer: str, timestamp: int | None = None, route: str = "direct") -> tuple[bytes, dict[str, str]]:
+
+def make_request(alert: dict, secret: str, printer: str, timestamp: int | None = None,
+                 route: str = "direct", message_fields: dict | None = None) -> tuple[bytes, dict[str, str]]:
     if timestamp is None:
         timestamp = int(time.time())
     payload = {
@@ -24,6 +28,10 @@ def make_request(alert: dict, secret: str, printer: str, timestamp: int | None =
     }
     if alert.get("payload"):
         payload["event"] = json.loads(alert["payload"])
+    if route == "direct":
+        options = message_fields or {}
+        selected = options.get(alert["kind"], options.get("default", DEFAULT_MESSAGE_FIELDS))
+        payload["message"] = render_direct_message(alert, printer, selected)
     body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
     signature = hmac.new(secret.encode("utf-8"), str(timestamp).encode() + b"." + body,
                          hashlib.sha256).hexdigest()
@@ -36,8 +44,10 @@ def make_request(alert: dict, secret: str, printer: str, timestamp: int | None =
 
 
 async def deliver(session: aiohttp.ClientSession, url: str, secret: str,
-                  printer: str, alert: dict, route: str = "direct") -> dict[str, Any]:
-    body, headers = make_request(alert, secret, printer, route=route)
+                  printer: str, alert: dict, route: str = "direct",
+                  message_fields: dict | None = None) -> dict[str, Any]:
+    body, headers = make_request(alert, secret, printer, route=route,
+                                 message_fields=message_fields)
     async with session.post(url, data=body, headers=headers,
                             timeout=aiohttp.ClientTimeout(total=15)) as response:
         response.raise_for_status()

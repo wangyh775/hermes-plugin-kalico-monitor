@@ -33,8 +33,8 @@ def query_status(url: str, api_key: str = "", timeout: int = 6,
 
 
 def query_force_status(url: str, api_key: str = "", timeout: int = 6) -> dict:
-    """Query only the optional PR #13 force monitor without affecting base status."""
-    return query_status(url, api_key, timeout, objects={"nozzle_force_monitor": None})
+    """Query the current filament_force plugin without affecting base status."""
+    return query_status(url, api_key, timeout, objects={"filament_force": None})
 
 
 THERMAL_PREFIXES = ("temperature_sensor ", "heater_generic ", "temperature_fan ")

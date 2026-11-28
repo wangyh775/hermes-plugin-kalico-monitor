@@ -12,10 +12,10 @@ from kalico_monitor.storage import Outbox
 
 
 def test_policy_defaults_and_overrides():
-    modes = parse_modes("klippy_shutdown=both,nozzle_force_anomaly=agent")
+    modes = parse_modes("klippy_shutdown=both,filament_jam_confirmed=agent")
     assert routes_for("complete", modes) == ("direct",)
     assert routes_for("klippy_shutdown", modes) == ("direct", "agent")
-    assert routes_for("nozzle_force_anomaly", modes) == ("agent",)
+    assert routes_for("filament_jam_confirmed", modes) == ("agent",)
     with pytest.raises(ValueError):
         parse_modes("shutdown=unsafe")
 
@@ -47,7 +47,8 @@ def test_route_specific_idempotency_ids():
     _, direct = make_request(alert, "secret", "PEEK", timestamp=100, route="direct")
     _, agent = make_request(alert, "secret", "PEEK", timestamp=100, route="agent")
     assert direct["X-Request-ID"] != agent["X-Request-ID"]
-    assert direct["X-Webhook-Signature-V2"] == agent["X-Webhook-Signature-V2"]
+    # Direct and Agent payloads differ by the preformatted message.
+    assert direct["X-Webhook-Signature-V2"] != agent["X-Webhook-Signature-V2"]
 
 
 def test_settings_rejects_remote_plaintext_agent(monkeypatch, tmp_path):
@@ -77,7 +78,8 @@ async def test_missing_agent_endpoint_does_not_block_direct_notification(
                                    severity="critical", detail="Shutdown"))
     delivered = []
 
-    async def fake_deliver(_session, _url, _secret, _printer, _item, route="direct"):
+    async def fake_deliver(_session, _url, _secret, _printer, _item,
+                           route="direct", message_fields=None):
         delivered.append(route)
         return {"status": "delivered"}
 

@@ -9,7 +9,7 @@
 | `/kalico health` 数据库不存在 | Monitor 是否启动、Hermes 与 Monitor 是否共享 SQLite 路径及访问权限 |
 | 心跳正常但无通知 | WebSocket 订阅、事件是否发生、SQLite 队列、Webhook 签名及飞书权限 |
 | 飞书命令无权限 | `KALICO_ALLOWED_CHAT_IDS`、Gateway 可信 `source.chat_id` |
-| `/kalico force` 无对象 | Kalico PR #13 是否部署、`[nozzle_force_monitor]` 是否加载 |
+| `/kalico force` 无对象 | 是否已部署并加载 `[filament_force]` |
 | 首层 Z 修正没有独立告警 | 当前桥接仅根据 `triggered` 与 `trigger_count` 生成告警，成功修正不触发 |
 | 网络恢复后收到旧报告 | SQLite outbox 补发历史消息，使用 `/kalico status` 查询当前状态 |
 | 重复告警 | 是否运行多个 Monitor、系统级与用户级服务同时启动、旧 Cron 未停用 |
@@ -22,7 +22,7 @@ journalctl --user -u kalico-monitor -n 100 --no-pager
 curl -fsS http://192.168.1.100:7125/server/info
 curl -fsS -X POST http://192.168.1.100:7125/printer/objects/query \
   -H 'Content-Type: application/json' \
-  -d '{"objects":{"nozzle_force_monitor":null}}'
+  -d '{"objects":{"filament_force":null}}'
 hermes plugins list
 .venv/bin/python -m pip install -e '.[test]'
 .venv/bin/python -m pytest -q

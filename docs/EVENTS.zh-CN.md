@@ -23,17 +23,12 @@
 | `moonraker_recovered` | Moonraker 订阅恢复 | info |
 | `stalled` | 打印进度长时间不变 | warning |
 | `print_progress` | 打印中的定时报告 | info |
-| `nozzle_force_anomaly` | 自定义喷嘴力模块触发 | warning |
 
-`stalled` 默认关闭；`print_progress` 默认关闭；`nozzle_force_anomaly` 桥接默认关闭。G-code 文本中的 `Bad probe`、`Probing failed` 目前仅作为近期故障上下文，**不会单独触发告警**。
+`stalled` 默认关闭；`print_progress` 默认关闭；`filament_force` 订阅默认关闭。G-code 文本中的 `Bad probe`、`Probing failed` 目前仅作为近期故障上下文，**不会单独触发告警**。
 
-## 自定义 Kalico PR #13
+## 事件来源说明
 
-[Kalico PR #13](https://github.com/wangyh775/kalico/pull/13) 是实验性 Draft。Klippy 模块分析称重传感器回弹事件，按配置选择仅记录、首层 Z 修正或请求暂停。Monitor 通过 Moonraker 订阅 `nozzle_force_monitor` 的 `get_status()`，根据 `triggered` 与 `trigger_count` 变化生成 `nozzle_force_anomaly`，并将事件写入 SQLite。
-
-**与最新 PR #13 的兼容性边界**：`first_layer_action` 支持 `log`、`pause`、`z_adjust`，`normal_layer_action` 支持 `log`、`pause`。当前 Hermes 桥接的 `trigger_count` 主要在请求暂停时递增；成功执行首层 Z 修正或仅记录回弹时，**不会自动发送独立的飞书告警**。虽然 Klippy 状态提供 `control_state`、`adjust_count`、`auto_z_total`、`offset_conflict`、`last_action_reason` 等字段，现有 `/kalico force` 尚未完整展示这些首层控制数据。
-
-Monitor 不能把 Klippy 内部 `printer.send_event` 直接当作 Moonraker 外部事件；当前桥接只使用状态对象订阅。断线、重启去重依赖计数和锁存检查点，尚无跨 Klippy 重启的全局唯一事件 ID 保证。若 `action: pause` 附近出现普通暂停，Monitor 会尽量抑制重复提醒；不能把暂停请求直接说成暂停成功，应另行核查 `print_stats.state=paused`。
+`started`、`paused`、`resumed` 是 Monitor 根据 Moonraker 状态转移**派生**的事件，不是同名 Moonraker 原生 Webhook。`filament_force.events` 是 Klippy 插件的结构化事件日志；`[event NAME]` 则允许 Monitor 根据 Moonraker 的数值状态生成只读阈值事件。详见 [事件配置](EVENT_ROUTER.zh-CN.md)。
 
 ## 零 LLM 快捷命令
 
@@ -57,11 +52,11 @@ Kalico -> Moonraker 状态订阅 -> Monitor 事件识别
 
 只有 Hermes Webhook 返回 `delivered` 或 `duplicate` 才认为投递成功；网络恢复可能补发历史报告。报告进度按文件位置估算，不代表成型质量。
 
-目前尚无通用 `events.yaml`、每事件独立开关/等级/渠道/冷却规则、首层 Z 修正独立事件、多打印机聚合或 AI 自动控制。这些属于未来功能，不能把规划配置当作已实现功能。
+现已支持严格的 `monitor.cfg` 数值阈值规则、Direct 字段选择；不支持任意代码或自动打印机控制。详见 [事件配置](EVENT_ROUTER.zh-CN.md)。
 
 ## filament_force 事件（新插件）
 
-开启已有的 KALICO_WATCH_NOZZLE_FORCE=1（可由 monitor.cfg 的 watch_nozzle_force 配置），Monitor 优先同时订阅 nozzle_force_monitor 与 filament_force.events，兼容仅存在其一或均不存在的设备。不会发送 G-code。
+开启已有的 KALICO_WATCH_NOZZLE_FORCE=1（可由 monitor.cfg 的 watch_nozzle_force 配置），Monitor 仅订阅 `filament_force.events`，旧 `nozzle_force_monitor` 告警不再产生。不会发送 G-code。
 
 支持 filament_jam_detected、filament_runout_detected、filament_diagnosis_result、filament_jam_confirmed、filament_z_adjusted、filament_recovery_started、filament_recovery_verified、filament_recovery_failed。各事件可配置 direct/agent/both/off；普通 paused/resumed 等生命周期事件仍独立发送。源事件 ID 由 Klippy boot_id 与序号组成，SQLite 去重，完整传输 payload 保存到 alerts.payload 并通过签名 Webhook JSON 的 event 字段发送；直接通知模板仍使用简短 detail，代理路由可使用 event 数据（需对应 Hermes 模板）。堵头窗口为保峰降采样，不是全速原始 ADC 文件。
 
