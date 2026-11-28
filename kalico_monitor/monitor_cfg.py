@@ -19,6 +19,8 @@ MONITOR_OPTIONS = {
     "disconnect_seconds": "KALICO_DISCONNECT_SECONDS",
     "watch_nozzle_force": "KALICO_WATCH_NOZZLE_FORCE",
 }
+PRINTER_OPTIONS = {"name": "KALICO_PRINTER_NAME", "moonraker_url": "MOONRAKER_URL"}
+STATUS_OPTIONS = {"fields": "KALICO_STATUS_FIELDS", "chamber_object": "KALICO_CHAMBER_OBJECT"}
 HERMES_OPTIONS = {"direct_chat_id": "KALICO_DIRECT_CHAT_ID", "agent_chat_id": "KALICO_AGENT_CHAT_ID"}
 CFG_KEYS = frozenset((*MONITOR_OPTIONS.values(), "KALICO_EVENT_MODES"))
 LIFECYCLE_EVENTS = (
@@ -56,8 +58,8 @@ def read_cfg(path: Path) -> dict[str, str]:
             parser.read_file(stream)
     except (configparser.Error, UnicodeError) as exc:
         raise ValueError(f"Monitor CFG 格式错误：{path}: {exc}") from exc
-    if parser.defaults() or set(parser.sections()) - {"monitor", "events", "hermes"}:
-        raise ValueError("monitor.cfg 只支持 [monitor]、[events] 和 [hermes]，不支持 [DEFAULT] 或未知节")
+    if parser.defaults() or set(parser.sections()) - {"monitor", "events", "hermes", "printer", "status"}:
+        raise ValueError("monitor.cfg 只支持 [monitor]、[events]、[hermes]、[printer] 和 [status]，不支持 [DEFAULT] 或未知节")
 
     from .setup import validate_field  # Deferred to keep the parser import-light.
     values: dict[str, str] = {}
@@ -67,6 +69,12 @@ def read_cfg(path: Path) -> dict[str, str]:
                 raise ValueError(f"未知 [monitor] 配置项：{option}")
             env_key = MONITOR_OPTIONS[option]
             values[env_key] = validate_field(env_key, raw)
+    for section, options in (("printer", PRINTER_OPTIONS), ("status", STATUS_OPTIONS)):
+        if parser.has_section(section):
+            for option, raw in parser.items(section):
+                if option not in options:
+                    raise ValueError(f"未知 [{section}] 配置项：{option}")
+                values[options[option]] = validate_field(options[option], raw)
     if parser.has_section("hermes"):
         for option, raw in parser.items("hermes"):
             if option not in HERMES_OPTIONS:
@@ -94,6 +102,10 @@ def render_cfg(values: dict[str, str]) -> str:
     ]
     for option, key in MONITOR_OPTIONS.items():
         lines.append(f"{option}: {validate_field(key, values[key])}")
+    for section, options in (("printer", PRINTER_OPTIONS), ("status", STATUS_OPTIONS)):
+        lines.extend(["", f"[{section}]"])
+        for option, key in options.items():
+            lines.append(f"{option}: {validate_field(key, values[key])}")
     lines.extend(["", "[hermes]"])
     for option, key in HERMES_OPTIONS.items():
         lines.append(f"{option}: {validate_field(key, values.get(key, ''))}")
