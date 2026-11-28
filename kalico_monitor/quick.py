@@ -162,10 +162,16 @@ def read_monitor(path: Path, limit: int = 5) -> dict:
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT value FROM metadata WHERE key='last_heartbeat_at'").fetchone()
         heartbeat = None if row is None else json.loads(row["value"])
-        count = conn.execute("SELECT COUNT(*) FROM alerts WHERE delivered IS NULL").fetchone()[0]
+        # A running old daemon may not have migrated the schema yet.
+        has_suppressed = any(row[1] == "suppressed" for row in
+                             conn.execute("PRAGMA table_info(alerts)"))
+        active = "delivered IS NULL AND suppressed IS NULL" if has_suppressed else "delivered IS NULL"
+        count = conn.execute(f"SELECT COUNT(*) FROM alerts WHERE {active}").fetchone()[0]
+        select_suppressed = "suppressed" if has_suppressed else "NULL AS suppressed"
         rows = conn.execute(
-            "SELECT kind,severity,filename,detail,created,delivered "
-            "FROM alerts WHERE kind != 'print_progress' ORDER BY created DESC LIMIT ?", (min(max(limit, 1), 10),)
+            "SELECT kind,severity,filename,detail,created,delivered, "
+            f"{select_suppressed} FROM alerts WHERE kind != 'print_progress' "
+            "ORDER BY created DESC LIMIT ?", (min(max(limit, 1), 10),)
         ).fetchall()
     return {"exists": True, "pending": count, "recent": [dict(r) for r in rows],
             "heartbeat": heartbeat}
@@ -177,7 +183,8 @@ def format_alerts(data: dict, printer: str = "Kalico") -> str:
     lines = [f"🔔 {printer} · 最近告警（待发送 {data['pending']} 条）"]
     for item in data["recent"]:
         date = time.strftime("%m-%d %H:%M", time.localtime(item["created"]))
-        delivery = "待发送" if item["delivered"] is None else "已投递"
+        delivery = ("已过滤" if item.get("suppressed") is not None
+                    else "待发送" if item["delivered"] is None else "已投递")
         lines.append(f"{date} [{_text(item['severity'], 12)}] "
                      f"{_text(item['kind'], 28)} · {delivery}\n"
                      f"  {_text(item['detail'], 160)}")
