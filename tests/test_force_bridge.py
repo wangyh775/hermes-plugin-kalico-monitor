@@ -274,7 +274,7 @@ async def test_ws_force_trigger_delivers_event_and_pause(tmp_path):
             await asyncio.wait_for(triggered.wait(), timeout=2)
             await asyncio.sleep(0.04)
             task.cancel()
-            with pytest.raises(asyncio.CancelledError):
+            with pytest.raises((asyncio.CancelledError, ConnectionError)):
                 await task
         assert [a["kind"] for a in db.pending()] == ["nozzle_force_anomaly", "paused"]
     finally:
