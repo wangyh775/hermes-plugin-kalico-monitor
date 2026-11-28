@@ -24,3 +24,22 @@ nozzle_force_anomaly: off
 ```
 
 Example policy only; configure a valid agent endpoint and chat before enabling both. The existing legacy event remains supported. Per-event arbitrary direct-message field selection is not implemented.
+
+
+## Force-event routing example
+
+```ini
+[events]
+default: direct
+nozzle_force_anomaly: off
+filament_jam_detected: direct
+filament_runout_detected: direct
+filament_diagnosis_result: direct
+filament_jam_confirmed: both
+filament_z_adjusted: direct
+filament_recovery_started: direct
+filament_recovery_verified: direct
+filament_recovery_failed: both
+```
+
+Example only; configure and validate both webhook endpoints first. paused/resumed are independent lifecycle events. off suppresses a route, not the producer. Legacy support remains for existing deployments; arbitrary direct-notification field selection and custom rule generation are not implemented.

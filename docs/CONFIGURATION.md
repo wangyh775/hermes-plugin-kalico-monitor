@@ -46,3 +46,10 @@ Example IP only. Configure [hermes] direct_chat_id and agent_chat_id through the
 | `KALICO_MONITOR_CFG` | Optional explicit path |
 
 Validate with config --check; config --apply asks confirmation and synchronizes integration/restarts. Back up before editing. Do not put HMAC secrets into screenshots or logs.
+
+
+## Configuration precedence
+
+Explicit CFG business options override legacy ENV options; missing options inherit ENV. The installer may mirror fields into ENV for backward compatibility. Use config --show and config --check to verify the effective configuration before applying. Do not mistake a routing name for an implemented event rule. To disable legacy force notifications while retaining new plugin events, enable watch_nozzle_force and set nozzle_force_anomaly: off. The switch subscribes to both optional object types; it is not a new force detector.
+
+The current configuration menu includes event routing and separate direct/agent targets. Back up monitor.env, monitor.cfg and Hermes config before applying. Keep the API key, webhook secret and URL in ENV. For detailed installer procedures see [deployment guide](ONE_CLICK_INSTALL.zh-CN.md) (Chinese legacy deployment detail; the current configuration reference takes precedence).

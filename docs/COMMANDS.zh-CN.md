@@ -27,3 +27,6 @@
 | `/kalico help` | 帮助 |
 
 快捷命令由 Hermes 授权，可追加群白名单，不调用 LLM。没有 /kalico 运动命令。test 不产生真实打印故障或生产队列记录。
+
+
+`events --watch` 只订阅基础对象，不订阅 filament_force 队列。`test filament_jam_detected` 只发送模拟文本通知，不产生生产方 schema 事件。负载测试使用模拟 JSON 及实际只读订阅。

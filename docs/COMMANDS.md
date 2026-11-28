@@ -27,3 +27,6 @@ Run from repository directory using `.venv/bin/kalico-monitor`. The command tool
 | `/kalico help` | Help |
 
 Quick commands are authorized through Hermes, may have an additional chat allowlist and do not invoke LLM. No /kalico motion commands. `test` does not create a real printer fault or production outbox record.
+
+
+`events --watch` subscribes only to base objects, not the filament_force journal. `test filament_jam_detected` sends a synthetic text alert, not a producer-schema event. Use the fixture and a real read-only subscription for payload testing.
