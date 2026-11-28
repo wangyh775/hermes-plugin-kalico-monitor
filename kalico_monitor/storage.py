@@ -34,6 +34,8 @@ class Outbox:
             PRIMARY KEY(alert_id, route),
             FOREIGN KEY(alert_id) REFERENCES alerts(id)
         )""")
+        if "payload" not in {row[1] for row in self.conn.execute("PRAGMA table_info(alerts)")}:
+            self.conn.execute("ALTER TABLE alerts ADD COLUMN payload TEXT")
         self.conn.commit()
 
     def close(self):
@@ -72,10 +74,19 @@ class Outbox:
     def _insert(self, alert: Alert) -> str:
         digest = hashlib.sha256(f"{self.printer}|{alert.id_key}".encode()).hexdigest()[:32]
         self.conn.execute("""INSERT OR IGNORE INTO alerts
-            (id,kind,severity,filename,detail,created,next_retry)
-            VALUES (?,?,?,?,?,?,?)""", (digest, alert.kind, alert.severity,
-                            alert.filename, alert.detail, time.time(), time.time()))
+            (id,kind,severity,filename,detail,created,next_retry,payload)
+            VALUES (?,?,?,?,?,?,?,?)""", (digest, alert.kind, alert.severity,
+                            alert.filename, alert.detail, time.time(), time.time(),
+                            json.dumps(alert.payload, ensure_ascii=False, allow_nan=False)
+                            if alert.payload is not None else None))
         return digest
+
+    def enqueue_source(self, alert: Alert) -> bool:
+        """Insert once across reconnects and process restarts."""
+        with self.conn:
+            before = self.conn.total_changes
+            self._insert(alert)
+            return self.conn.total_changes > before
 
     def enqueue(self, alert: Alert) -> str:
         with self.conn:
