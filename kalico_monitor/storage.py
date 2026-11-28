@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import sqlite3
 import time
 from pathlib import Path
@@ -50,6 +51,18 @@ class Outbox:
             self.conn.execute("ALTER TABLE alerts ADD COLUMN payload TEXT")
         if "origin" not in {row[1] for row in self.conn.execute("PRAGMA table_info(alerts)")}:
             self.conn.execute("ALTER TABLE alerts ADD COLUMN origin TEXT")
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS dead_letters (
+            id TEXT PRIMARY KEY, kind TEXT NOT NULL, route TEXT NOT NULL,
+            reason TEXT NOT NULL, created REAL NOT NULL, data TEXT NOT NULL)""")
+        for name, sql in (
+            ("alerts_unfinished", "ON alerts(severity,created) WHERE delivered IS NULL AND suppressed IS NULL"),
+            ("routes_due", "ON alert_routes(route,next_retry,alert_id) WHERE delivered IS NULL AND suppressed IS NULL"),
+            ("alerts_terminal", "ON alerts(created) WHERE delivered IS NOT NULL OR suppressed IS NOT NULL"),
+        ):
+            self.conn.execute(f"CREATE INDEX IF NOT EXISTS {name} {sql}")
+        if "incident_key" not in {row[1] for row in self.conn.execute("PRAGMA table_info(alerts)")}:
+            self.conn.execute("ALTER TABLE alerts ADD COLUMN incident_key TEXT")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS alerts_incident ON alerts(incident_key,created)")
         self.conn.commit()
 
     def close(self):
@@ -65,18 +78,20 @@ class Outbox:
 
     def _set_meta(self, key: str, value) -> None:
         self.conn.execute("INSERT OR REPLACE INTO metadata (key,value) VALUES (?,?)",
-                          (key, json.dumps(value, ensure_ascii=False)))
+                          (key, json.dumps(value, ensure_ascii=True, allow_nan=False)))
 
     def set_meta(self, key: str, value) -> None:
         with self.conn:
             self._set_meta(key, value)
 
-    def transition(self, state: dict, alerts: list[Alert]) -> None:
+    def transition(self, state: dict, alerts: list[Alert], incident=None) -> None:
         """Atomic: pending alerts cannot disappear because state advanced first."""
         with self.conn:
             for alert in alerts:
                 self._insert(alert)
             self._set_meta("watch_state", state)
+            if incident is not None:
+                self._set_meta("shutdown_open_incident", incident)
 
     def report_checkpoint(self, key: str, tracker: dict, alert: Alert | None = None) -> None:
         """Queue a periodic report and its next deadline in one transaction."""
@@ -85,28 +100,85 @@ class Outbox:
                 self._insert(alert)
             self._set_meta(key, tracker)
 
+    def alert_id(self, alert: Alert) -> str:
+        return hashlib.sha256(f"{self.printer}|{alert.id_key}".encode("utf-8", "backslashreplace")).hexdigest()[:32]
+
+    def _quarantine(self, key, kind, route, reason, data):
+        self.conn.execute("""INSERT OR IGNORE INTO dead_letters
+            (id,kind,route,reason,created,data) VALUES (?,?,?,?,?,?)""",
+            (key, str(kind).encode("utf-8", "replace").decode()[:100], route,
+             str(reason).encode("utf-8", "replace").decode()[:300], time.time(),
+             json.dumps(data, ensure_ascii=True, default=str)[:4096]))
+
+    def quarantine(self, key, kind, reason, data):
+        with self.conn:
+            self._quarantine(key, kind, "ingest", reason, data)
+
     def _insert(self, alert: Alert) -> str:
-        digest = hashlib.sha256(f"{self.printer}|{alert.id_key}".encode()).hexdigest()[:32]
+        digest = self.alert_id(alert)
+        try:
+            from .event_registry import validate_payload
+            validate_payload(alert.kind, alert.payload, alert.severity)
+            for value in (alert.kind, alert.filename, alert.detail, alert.severity):
+                value.encode("utf-8")
+            payload = json.dumps(alert.payload, ensure_ascii=False, allow_nan=False) if alert.payload is not None else None
+            if payload is not None:
+                payload.encode("utf-8")
+            origin = json.dumps(metadata(alert.kind, alert.payload, alert.source_method,
+                                         alert.trigger) | {"received_at": utc_timestamp(alert.received_at),
+                                                           "source_event_id": alert.source_id,
+                                                           "generation": alert.generation,
+                                                           "sequence": alert.sequence,
+                                                           "source_eventtime": alert.source_eventtime,
+                                                           "source_clock_id": alert.source_clock_id,
+                                                           "generated_at": utc_timestamp(alert.generated_at)},
+                                ensure_ascii=False, allow_nan=False)
+            origin.encode("utf-8")
+        except (ValueError, TypeError, UnicodeError, OverflowError, RecursionError) as exc:
+            self._quarantine(digest, alert.kind, "ingest", type(exc).__name__,
+                             {"detail": alert.detail})
+            return digest
+        incident = (alert.payload or {}).get("incident_key")
         self.conn.execute("""INSERT OR IGNORE INTO alerts
-            (id,kind,severity,filename,detail,created,next_retry,payload,origin)
-            VALUES (?,?,?,?,?,?,?,?,?)""", (digest, alert.kind, alert.severity,
+            (id,kind,severity,filename,detail,created,next_retry,payload,origin,incident_key)
+            VALUES (?,?,?,?,?,?,?,?,?,?)""", (digest, alert.kind, alert.severity,
                             alert.filename, alert.detail, time.time(), time.time(),
-                            json.dumps(alert.payload, ensure_ascii=False, allow_nan=False)
-                            if alert.payload is not None else None,
-                            json.dumps(metadata(alert.kind, alert.payload, alert.source_method,
-                                                alert.trigger) | {"received_at": utc_timestamp(alert.received_at),
-                                                                  "source_event_id": alert.source_id,
-                                                                  "generation": alert.generation,
-                                                                  "sequence": alert.sequence},
-                                       ensure_ascii=False)))
+                            payload, origin, incident if isinstance(incident, str) else None))
         return digest
+
+    def enrich_alert(self, alert_id: str, detail: str) -> None:
+        detail = detail.encode("utf-8", "replace").decode("utf-8")[:1500]
+        with self.conn:
+            self._set_meta(f"shutdown_detail:{alert_id}", detail)
+            self.conn.execute("""UPDATE alerts SET detail=? WHERE id=? AND delivered IS NULL
+                AND NOT EXISTS (SELECT 1 FROM alert_routes WHERE alert_id=?)""",
+                (detail, alert_id, alert_id))
+
+    def route_dead(self, alert_id, route, reason):
+        with self.conn:
+            self._quarantine(f"{alert_id}:{route}", "delivery", route, reason, {"alert_id": alert_id})
+            self.conn.execute("""UPDATE alert_routes SET suppressed=?,last_error=?
+                WHERE alert_id=? AND route=? AND delivered IS NULL AND suppressed IS NULL""",
+                (time.time(), "permanent failure: " + reason[:180], alert_id, route))
+            self._finalize_routes(alert_id)
+
+    def journal_checkpoint(self, cursor: dict, alert: Alert, gap: Alert | None = None) -> bool:
+        with self.conn:
+            digest = self.alert_id(alert)
+            existed = self.conn.execute('SELECT 1 FROM alerts WHERE id=?', (digest,)).fetchone()
+            if gap is not None:
+                self._insert(gap)
+            self._insert(alert)
+            self._set_meta('filament_cursors_v1', cursor)
+            return not existed and self.conn.execute('SELECT 1 FROM alerts WHERE id=?', (digest,)).fetchone() is not None
 
     def enqueue_source(self, alert: Alert) -> bool:
         """Insert once across reconnects and process restarts."""
         with self.conn:
-            before = self.conn.total_changes
+            digest = self.alert_id(alert)
+            existed = self.conn.execute('SELECT 1 FROM alerts WHERE id=?', (digest,)).fetchone()
             self._insert(alert)
-            return self.conn.total_changes > before
+            return not existed and self.conn.execute('SELECT 1 FROM alerts WHERE id=?', (digest,)).fetchone() is not None
 
     def enqueue(self, alert: Alert) -> str:
         with self.conn:
@@ -189,6 +261,12 @@ class Outbox:
             JOIN alerts a ON a.id=r.alert_id WHERE r.delivered IS NULL
             AND r.suppressed IS NULL AND a.suppressed IS NULL
             AND r.next_retry<=? AND (? IS NULL OR r.route=?)
+            AND (a.incident_key IS NULL OR NOT EXISTS (
+                SELECT 1 FROM alerts p WHERE p.incident_key=a.incident_key
+                AND p.rowid<a.rowid AND p.delivered IS NULL AND p.suppressed IS NULL
+                AND (NOT EXISTS (SELECT 1 FROM alert_routes pr WHERE pr.alert_id=p.id)
+                    OR EXISTS (SELECT 1 FROM alert_routes pr WHERE pr.alert_id=p.id
+                        AND pr.route=r.route AND pr.delivered IS NULL AND pr.suppressed IS NULL))))
             ORDER BY CASE a.severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,
                      a.created LIMIT ?""", (now, route, route, limit)).fetchall()
         return [dict(r) for r in rows]
@@ -256,6 +334,24 @@ class Outbox:
         with self.conn:
             self.conn.execute("""UPDATE alerts SET attempts=?,next_retry=?,last_error=?
                 WHERE id=?""", (attempts, time.time() + delay, error[:240], alert_id))
+
+    def update_storage_health(self) -> dict:
+        size = sum(p.stat().st_size for p in (self.path, Path(str(self.path) + "-wal")) if p.exists())
+        free = shutil.disk_usage(self.path.parent).free
+        health = {"bytes": size, "disk_free": free,
+                  "pressure": size >= 256 * 1024**2 or free < 128 * 1024**2}
+        self.set_meta("storage_health", health)
+        return health
+
+    def archive_info(self, before: float, limit: int = 500) -> int:
+        """Compact terminal G-code records only; keep IDs and route audit."""
+        with self.conn:
+            rows = self.conn.execute('''SELECT id FROM alerts WHERE kind='notify_gcode_response'
+                AND severity='info' AND created<? AND (delivered IS NOT NULL OR suppressed IS NOT NULL)
+                AND payload IS NOT NULL LIMIT ?''', (before, limit)).fetchall()
+            self.conn.executemany("UPDATE alerts SET payload=NULL,detail='Archived informational G-code' WHERE id=?",
+                                  [(row['id'],) for row in rows])
+            return len(rows)
 
     def summary(self) -> dict:
         counts = self.conn.execute("""SELECT

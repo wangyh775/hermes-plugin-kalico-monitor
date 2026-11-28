@@ -26,6 +26,7 @@ MESSAGE_FIELDS = {
     "received_at", "queued_at", "source_occurred_at", "previous_state", "current_state",
     "klippy_state", "params_summary", "service", "service_state", "throttle_bits",
     "incident_id", "source_event_id", "generation", "sequence",
+    "incident_key", "source_eventtime", "source_clock_id", "generated_at",
     "gcode_response", "action", "queue_state", "name", "job_filename",
 }
 DEFAULT_MESSAGE_FIELDS = (

@@ -165,12 +165,21 @@ def read_monitor(path: Path, limit: int = 5) -> dict:
         health = {r["key"]: json.loads(r["value"]) for r in conn.execute(
             "SELECT key,value FROM metadata WHERE key IN "
             "('subscription_health','transport_connected','native_oversize_count',"
-            "'dispatcher_heartbeat_direct','dispatcher_heartbeat_agent')")}
+            "'dispatcher_heartbeat_direct','dispatcher_heartbeat_agent','webhook_health_direct',"
+            "'webhook_health_agent','storage_health')")}
         # A running old daemon may not have migrated the schema yet.
         has_suppressed = any(row[1] == "suppressed" for row in
                              conn.execute("PRAGMA table_info(alerts)"))
         active = "delivered IS NULL AND suppressed IS NULL" if has_suppressed else "delivered IS NULL"
         count = conn.execute(f"SELECT COUNT(*) FROM alerts WHERE {active}").fetchone()[0]
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        health["dead_letters"] = conn.execute("SELECT COUNT(*) FROM dead_letters").fetchone()[0] if "dead_letters" in tables else 0
+        if "alert_routes" in tables:
+            health["routes"] = {row["route"]: dict(row) for row in conn.execute("""SELECT route,COUNT(*) AS pending,
+                MIN(a.created) AS oldest, MAX(r.attempts) AS max_attempts
+                FROM alert_routes r JOIN alerts a ON a.id=r.alert_id
+                WHERE r.delivered IS NULL AND r.suppressed IS NULL GROUP BY route""")}
+        health["db_bytes"] = sum(p.stat().st_size for p in (path, Path(str(path)+"-wal")) if p.exists())
         select_suppressed = "suppressed" if has_suppressed else "NULL AS suppressed"
         rows = conn.execute(
             "SELECT kind,severity,filename,detail,created,delivered, "
@@ -213,6 +222,12 @@ def format_health(data: dict, printer: str = "Kalico", now: float | None = None)
     transport = health.get("transport_connected")
     transport_text = "已连接" if transport is True else "断开" if transport is False else "未知"
     lines = [f"Moonraker 连接：{transport_text}", f"订阅：{subscription.get('state', 'unknown')}"]
+    lines.append(f"隔离事件/路由：{health.get('dead_letters', 0)}")
+    lines.append(f"SQLite 大小：{health.get('db_bytes', 0)/1048576:.1f} MiB")
+    if health.get("storage_health", {}).get("pressure"):
+        lines.append("⚠ SQLite 容量或磁盘空间达到预警阈值")
+    for route, info in health.get("routes", {}).items():
+        lines.append(f"{route} 待发：{info['pending']}，最大重试：{info['max_attempts']}")
     if health.get("native_oversize_count"):
         lines.append(f"原生超限载荷：{health['native_oversize_count']} 条")
     if subscription.get("missing"):
@@ -221,6 +236,9 @@ def format_health(data: dict, printer: str = "Kalico", now: float | None = None)
         stamp = _number(health.get(f"dispatcher_heartbeat_{route}"))
         live = stamp is not None and 0 <= now - stamp <= 90
         lines.append(f"{route} 分发：{'运行中' if live else '未知或过期'}")
+        webhook = health.get(f"webhook_health_{route}", {})
+        lines.append(f"{route} Webhook：{webhook.get('state', 'unknown')} "
+                     f"{webhook.get('http_status') or ''}".strip())
     return (f"🩺 {printer} · Monitor 状态\n"
             f"{state}\n待发送告警：{data['pending']} 条\n" + "\n".join(lines) + "\n" +
             "注：心跳反映监控进程，不代表飞书通知已验证送达。")

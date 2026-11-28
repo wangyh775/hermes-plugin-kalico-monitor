@@ -54,12 +54,19 @@ def make_request(alert: dict, secret: str, printer: str, timestamp: int | None =
     }
 
 
+class PermanentPayloadError(ValueError):
+    """Local serialization error; retrying the same bytes cannot fix it."""
+
+
 async def deliver(session: aiohttp.ClientSession, url: str, secret: str,
                   printer: str, alert: dict, route: str = "direct",
                   message_fields: dict | None = None,
                   message_templates: dict | None = None) -> dict[str, Any]:
-    body, headers = make_request(alert, secret, printer, route=route,
-                                 message_fields=message_fields, message_templates=message_templates)
+    try:
+        body, headers = make_request(alert, secret, printer, route=route,
+                                     message_fields=message_fields, message_templates=message_templates)
+    except (ValueError, TypeError, KeyError, UnicodeError, OverflowError, RecursionError) as exc:
+        raise PermanentPayloadError(type(exc).__name__) from exc
     async with session.post(url, data=body, headers=headers,
                             timeout=aiohttp.ClientTimeout(total=15)) as response:
         response.raise_for_status()

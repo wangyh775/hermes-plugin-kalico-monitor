@@ -23,6 +23,9 @@ class Alert:
     source_method: str | None = None
     trigger: str | None = None
     received_at: float = field(default_factory=time.time, compare=False)
+    generated_at: float = field(default_factory=time.time, compare=False)
+    source_eventtime: float | None = None
+    source_clock_id: str | None = None
 
     @property
     def id_key(self) -> str:

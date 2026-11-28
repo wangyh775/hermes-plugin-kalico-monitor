@@ -52,6 +52,7 @@ class RuleEngine:
             if isinstance(state, dict) and (state.get("since") is not None or state.get("last") is not None):
                 state["since"] = None
                 state["last"] = None
+                state["last_observation"] = None
                 changed = True
         if changed:
             self.store.set_meta(META_KEY, self.tracker)
@@ -81,22 +82,32 @@ class RuleEngine:
                 (rule.object, rule.field.split(".")[0]), float("-inf")) <= 120
             value = numeric_field(status, rule.object, rule.field) if connected and fresh else None
             active = value is not None and matched(value, rule.condition, rule.threshold)
+            observed = now if field_seen is None else field_seen.get((rule.object, rule.field.split(".")[0]))
+            state["quality"] = ("unavailable" if not connected or rule.object not in status else
+                                "stale" if not fresh else "invalid" if value is None else "valid")
             since = state.get("since")
             if not active:
                 state["since"] = None
+                state["last_observation"] = None
                 if value is not None:
                     state["fired"] = False
             else:
-                if not isinstance(since, (int, float)) or since > now:
-                    state["since"] = now
+                last_observation = state.get("last_observation")
+                if (not isinstance(since, (int, float)) or since > now
+                        or (observed is not None and last_observation is not None
+                            and observed - last_observation > 35)):
+                    state["since"] = observed if observed is not None else now
+                state["last_observation"] = observed
                 last = state.get("last")
                 cooldown_ok = (not isinstance(last, (int, float))
                                or now - last >= rule.cooldown)
+                if field_seen is not None and isinstance(state.get("last_wall"), (int, float)):
+                    cooldown_ok = cooldown_ok and time.time() - state["last_wall"] >= rule.cooldown
                 if (not state.get("fired")
-                        and now - state["since"] >= rule.duration
+                        and observed is not None and observed - state["since"] >= rule.duration
                         and cooldown_ok):
                     seq = int(state.get("sequence", 0)) + 1
-                    state.update(fired=True, last=now, sequence=seq)
+                    state.update(fired=True, last=now, last_wall=time.time(), sequence=seq)
                     payload = {
                         "source": "moonraker", "object": rule.object,
                         "field": rule.field, "value": value,

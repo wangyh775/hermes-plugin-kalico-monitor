@@ -1,6 +1,7 @@
 """Read-only bridge for the filament_force Klippy status event journal."""
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from typing import Any
@@ -50,8 +51,8 @@ def valid_event(event: Any) -> bool:
                or any(finite(x) is None for x in row) for row in samples):
             return False
     try:
-        return len(json.dumps(event, allow_nan=False)) <= 256_000
-    except (ValueError, TypeError, OverflowError, RecursionError):
+        return len(json.dumps(event, allow_nan=False, ensure_ascii=False).encode('utf-8')) <= 256_000
+    except (ValueError, TypeError, OverflowError, RecursionError, UnicodeError):
         return False
 
 
@@ -86,9 +87,27 @@ class FilamentEventTracker:
         if not isinstance(events, list):
             return 0
         count = 0
-        for event in events[-16:]:
+        cursor = self.store.get_meta("filament_cursors_v1", {})
+        valid = []
+        for event in events:
             if not valid_event(event):
+                try:
+                    raw = json.dumps(event, ensure_ascii=True, default=str)
+                except (TypeError, ValueError, RecursionError):
+                    raw = "<unserializable journal event>"
+                key = hashlib.sha256(raw.encode()).hexdigest()
+                self.store.quarantine(key, "filament_force", "invalid journal event", raw[:1000])
                 continue
+            valid.append(event)
+        for event in sorted(valid, key=lambda item: (item["boot_id"], item["seq"])):
+            boot, seq = event["boot_id"], event["seq"]
+            last = cursor.get(boot, 0)
+            gap = None
+            if seq > last + 1 and boot in cursor:
+                gap = Alert("event_gap_detected", 0, "", f"filament_force {boot}: {last+1}..{seq-1} missing",
+                            "warning", source_id=f"{boot}:{last+1}:{seq-1}",
+                            payload={"boot_id": boot, "missing_from": last+1, "missing_to": seq-1},
+                            trigger="extension_journal_gap")
             kind = event["kind"]
             filename = event.get("filename") or state.get("filename", "")
             filename = filename[:180] if isinstance(filename, str) else ""
@@ -99,5 +118,7 @@ class FilamentEventTracker:
                           filename=filename, detail=detail(event),
                           severity=EVENTS[kind][1], source_id=event["event_id"],
                           payload=event, trigger="extension_journal", source_method=source_method)
-            count += int(self.store.enqueue_source(alert))
+            if seq > last:
+                cursor[boot] = seq
+            count += int(self.store.journal_checkpoint(cursor, alert, gap))
         return count

@@ -21,6 +21,10 @@ def as_number(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def _safe_text(value: Any) -> str:
+    return value.encode('utf-8', 'replace').decode('utf-8') if isinstance(value, str) else ''
+
+
 def sample_from_status(status: dict) -> dict:
     stats = status.get("print_stats", {})
     virtual = status.get("virtual_sdcard", {})
@@ -29,13 +33,15 @@ def sample_from_status(status: dict) -> dict:
     virtual = virtual if isinstance(virtual, dict) else {}
     hooks = hooks if isinstance(hooks, dict) else {}
     return {
-        "filename": stats.get("filename") if isinstance(stats.get("filename"), str) else "",
+        "filename": _safe_text(stats.get("filename")),
         "state": stats.get("state") if isinstance(stats.get("state"), str) else "",
-        "message": stats.get("message") if isinstance(stats.get("message"), str) else "",
+        "message": _safe_text(stats.get("message")),
         "klippy_state": hooks.get("state") if isinstance(hooks.get("state"), str) else "",
-        "klippy_message": hooks.get("state_message") if isinstance(hooks.get("state_message"), str) else "",
+        "klippy_message": _safe_text(hooks.get("state_message")),
         "file_position": as_number(virtual.get("file_position")),
         "progress": as_number(virtual.get("progress")),
+        "total_duration": as_number(stats.get("total_duration")),
+        "job_identity": status.get("_monitor_job", {}).get("identity"),
     }
 
 
@@ -53,6 +59,8 @@ def initial_state(sample: dict, now: float) -> dict:
         "file_position": sample["file_position"],
         "progress": sample["progress"],
         "progress_changed_at": now,
+        "total_duration": sample.get("total_duration"),
+        "job_identity": sample.get("job_identity"),
         "stall_open": False,
     }
 
@@ -81,10 +89,19 @@ def compare(previous: dict | None, sample: dict, now: float, stall_minutes: int 
     new_klippy = sample["klippy_state"]
     stopped = new_klippy in STOPPED
 
-    new_job = new_print == "printing" and (
+    old_duration, duration = previous.get("total_duration"), sample.get("total_duration")
+    reset = (old_print in ("printing", "paused") and old_duration is not None
+             and duration is not None and old_duration - duration > 2
+             and sample.get("file_position") is not None
+             and previous.get("file_position") is not None
+             and sample["file_position"] < previous["file_position"])
+    identity = sample.get("job_identity")
+    old_identity = previous.get("job_identity")
+    identity_changed = bool(identity and old_identity and identity != old_identity)
+    new_job = new_print in ("printing", "paused") and (identity_changed or (new_print == "printing" and (reset or
         old_print in ("", "standby", "complete", "error", "cancelled")
         or (bool(sample["filename"]) and sample["filename"] != old_filename)
-    )
+    )))
     if new_job:
         generation += 1
     notified = set(previous.get("notified", []))
@@ -152,6 +169,8 @@ def compare(previous: dict | None, sample: dict, now: float, stall_minutes: int 
         "notified": sorted(notified), "transition_counts": transition_counts,
         "file_position": sample["file_position"],
         "progress": sample["progress"], "progress_changed_at": changed_at,
+        "total_duration": sample.get("total_duration"),
+        "job_identity": identity if identity else (old_identity if not new_job else None),
         "stall_open": stall_open,
     })
     return state, events
