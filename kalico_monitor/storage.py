@@ -83,7 +83,8 @@ class Outbox:
         kinds = {"moonraker_unreachable": "moonraker", "moonraker_recovered": "moonraker",
                  "klippy_disconnected": "klippy", "klippy_recovered": "klippy",
                  "klippy_shutdown": "klippy_shutdown", "klippy_shutdown_recovered": "klippy_shutdown"}
-        for row in self.conn.execute("SELECT id,kind,payload,origin FROM alerts WHERE incident_key IS NULL"):
+        for row in self.conn.execute("SELECT id,kind,payload,origin FROM alerts WHERE incident_key IS NULL "
+                                     "AND kind IN (?,?,?,?,?,?)", tuple(kinds)):
             prefix = kinds.get(row["kind"])
             if prefix is None:
                 continue

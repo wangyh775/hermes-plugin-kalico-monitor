@@ -147,7 +147,8 @@ class Monitor:
                           payload={"missing": missing}, trigger="subscription")
             self.store.report_checkpoint("capability_state", state, alert)
 
-    def _save(self, current: dict, alerts: list[Alert]):
+    def _save(self, current: dict, alerts: list[Alert], *, source_method=None, received_at=None,
+              source_eventtime=None):
         closed = []
         if current.get("klippy_state") == "ready" and self.subscription_active:
             for key, kind, prefix in (("shutdown_open_incident", "klippy_shutdown_recovered", "klippy_shutdown"),
@@ -157,7 +158,10 @@ class Monitor:
                     generation = opened["id"]
                     alerts.append(Alert(kind, generation, "", "Klippy ready; prior fault may not have been delivered",
                                         "info", payload={"incident_id": generation,
-                                        "incident_key": f"{prefix}:{generation}"}, trigger="state_recovery"))
+                                        "incident_key": f"{prefix}:{generation}"}, trigger="state_recovery",
+                                        source_method=source_method, received_at=time.time() if received_at is None else received_at,
+                                        source_eventtime=source_eventtime,
+                                        source_clock_id=self.clock_id if source_eventtime is not None else None))
                     closed.append(key)
         previous = self.last_stored_state
         important = (previous is None or
@@ -193,7 +197,8 @@ class Monitor:
                          for alert in alerts]
         if self.subscription_active and self.filament_tracker is not None:
             self.filament_tracker.observe(processor.status, current, source_method=source_method)
-        self._save(current, alerts)
+        self._save(current, alerts, source_method=source_method, received_at=received_at,
+                   source_eventtime=source_eventtime)
 
     def _heartbeat(self) -> None:
         if time.monotonic() - self.last_heartbeat_at >= 30:

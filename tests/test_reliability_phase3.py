@@ -4,9 +4,12 @@ import json
 import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
+import aiohttp
 import pytest
 
+from kalico_monitor import monitor as monitor_module
 from kalico_monitor.config import Settings
 from kalico_monitor.custom_config import load_extensions, load_reliability
 from kalico_monitor.events import Alert, EventProcessor
@@ -170,4 +173,73 @@ async def test_watchdog_separate_maintenance_task(tmp_path):
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_late_subscription_ack_cannot_reactivate_invalidated_epoch(tmp_path):
+    cfg = config(tmp_path)
+    db = Outbox(cfg.sqlite_path, cfg.printer)
+    waiting, release = asyncio.Event(), asyncio.Event()
+
+    class Socket:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def send_json(self, packet):
+            self.request = packet
+
+        async def receive(self, **kwargs):
+            waiting.set()
+            await release.wait()
+            return SimpleNamespace(type=aiohttp.WSMsgType.TEXT, data=json.dumps({
+                "id": self.request["id"], "result": {"status": snapshot()}}))
+
+    monitor = Monitor(cfg, db)
+    socket = Socket()
+    task = asyncio.create_task(monitor._listen(SimpleNamespace(ws_connect=lambda *a, **kw: socket)))
+    try:
+        await asyncio.wait_for(waiting.wait(), 1)
+        monitor.transport_lost = True
+        monitor.connection_epoch += 1
+        monitor._invalidate_subscription("disconnected")
+        release.set()
+        with pytest.raises(ConnectionError, match="expired"):
+            await task
+        assert not monitor.subscription_active
+        assert db.get_state() is None
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_terminal_http_rejection_does_not_block_recovery(tmp_path, monkeypatch):
+    cfg = config(tmp_path)
+    db = Outbox(cfg.sqlite_path, cfg.printer)
+    recovered = asyncio.Event()
+
+    async def deliver(_session, _url, _secret, _printer, item, **kwargs):
+        if item["kind"] == "moonraker_unreachable":
+            raise aiohttp.ClientResponseError(None, (), status=422)
+        recovered.set()
+
+    monkeypatch.setattr(monitor_module, "deliver", deliver)
+    incident = {"incident_id": 1, "incident_key": "moonraker:1"}
+    first = db.enqueue(Alert("moonraker_unreachable", 1, "", "lost", "critical", payload=incident))
+    second = db.enqueue(Alert("moonraker_recovered", 1, "", "ready", "info", payload=incident))
+    task = asyncio.create_task(Monitor(cfg, db)._dispatch_route(None, "direct"))
+    try:
+        await asyncio.wait_for(recovered.wait(), 2)
+        assert db.conn.execute("SELECT suppressed FROM alert_routes WHERE alert_id=?", (first,)).fetchone()[0]
+        assert db.conn.execute("SELECT delivered FROM alert_routes WHERE alert_id=?", (second,)).fetchone()[0]
+        assert len(inspect(db.path, "dead-letters", "list")) == 1
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
         db.close()
