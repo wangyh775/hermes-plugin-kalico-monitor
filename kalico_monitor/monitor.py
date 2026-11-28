@@ -104,6 +104,8 @@ class Monitor:
                 # Persist both tasks even when the analysis endpoint is absent.
                 # The direct alert must never depend on Agent configuration.
                 self.store.ensure_routes(item["id"], routes)
+                if not routes:
+                    LOG.info("notification suppressed: kind=%s id=%s", item["kind"], item["id"])
             for item in self.store.pending_routes(limit=12):
                 route = item["route"]
                 url = self.settings.hermes_agent_url if route == "agent" else self.settings.hermes_url
