@@ -2,11 +2,11 @@ from pathlib import Path
 
 import pytest
 
+from kalico_monitor.events import Alert
 from kalico_monitor.monitor_cfg import read_cfg, save_cfg
 from kalico_monitor.policy import parse_modes, routes_for
 from kalico_monitor.setup import defaults, read_env
 from kalico_monitor.storage import Outbox
-from kalico_monitor.events import Alert
 
 
 def test_cfg_roundtrip(tmp_path: Path):
