@@ -1,6 +1,8 @@
 """Per-event delivery policy. No model is used to select a route."""
 from __future__ import annotations
 
+from .event_registry import NATIVE
+
 MODES = frozenset({"direct", "agent", "both"})
 EVENT_MODES = MODES | {"off"}
 DEFAULTS = {}
@@ -19,8 +21,14 @@ def parse_modes(value: str) -> dict[str, str]:
     return result
 
 
+def mode_for(kind: str, modes: dict[str, str]) -> str:
+    if kind in NATIVE:
+        return modes.get(kind, "off") if NATIVE[kind].forwardable else "off"
+    return modes.get(kind, modes["default"])
+
+
 def routes_for(kind: str, modes: dict[str, str]) -> tuple[str, ...]:
-    mode = modes.get(kind, modes["default"])
+    mode = mode_for(kind, modes)
     if mode == "off":
         return ()
     return ("direct", "agent") if mode == "both" else (mode,)

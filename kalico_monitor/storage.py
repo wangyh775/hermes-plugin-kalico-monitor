@@ -7,6 +7,7 @@ import sqlite3
 import time
 from pathlib import Path
 
+from .event_registry import metadata
 from .events import Alert
 
 
@@ -47,6 +48,8 @@ class Outbox:
         # The filament_force bridge persists structured incident payloads.
         if "payload" not in {row[1] for row in self.conn.execute("PRAGMA table_info(alerts)")}:
             self.conn.execute("ALTER TABLE alerts ADD COLUMN payload TEXT")
+        if "origin" not in {row[1] for row in self.conn.execute("PRAGMA table_info(alerts)")}:
+            self.conn.execute("ALTER TABLE alerts ADD COLUMN origin TEXT")
         self.conn.commit()
 
     def close(self):
@@ -85,11 +88,13 @@ class Outbox:
     def _insert(self, alert: Alert) -> str:
         digest = hashlib.sha256(f"{self.printer}|{alert.id_key}".encode()).hexdigest()[:32]
         self.conn.execute("""INSERT OR IGNORE INTO alerts
-            (id,kind,severity,filename,detail,created,next_retry,payload)
-            VALUES (?,?,?,?,?,?,?,?)""", (digest, alert.kind, alert.severity,
+            (id,kind,severity,filename,detail,created,next_retry,payload,origin)
+            VALUES (?,?,?,?,?,?,?,?,?)""", (digest, alert.kind, alert.severity,
                             alert.filename, alert.detail, time.time(), time.time(),
                             json.dumps(alert.payload, ensure_ascii=False, allow_nan=False)
-                            if alert.payload is not None else None))
+                            if alert.payload is not None else None,
+                            json.dumps(metadata(alert.kind, alert.payload, alert.source_method,
+                                                alert.trigger), ensure_ascii=False)))
         return digest
 
     def enqueue_source(self, alert: Alert) -> bool:

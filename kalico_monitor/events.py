@@ -18,6 +18,8 @@ class Alert:
     sequence: int | None = None
     source_id: str | None = None
     payload: dict | None = None
+    source_method: str | None = None
+    trigger: str | None = None
 
     @property
     def id_key(self) -> str:
@@ -42,7 +44,8 @@ class EventProcessor:
         self.recent_errors: deque[str] = deque(maxlen=8)
         self.has_snapshot = False
 
-    def _alerts(self, events: list[dict], sample: dict) -> list[Alert]:
+    def _alerts(self, events: list[dict], sample: dict,
+                source_method: str | None, trigger: str | None) -> list[Alert]:
         out = []
         for event in events:
             detail = event["detail"].strip()
@@ -51,25 +54,27 @@ class EventProcessor:
             out.append(Alert(kind=event["kind"], generation=event["generation"],
                              filename=sample["filename"], detail=detail[:1500],
                              severity=SEVERITY[event["kind"]],
-                             sequence=event.get("sequence")))
+                             sequence=event.get("sequence"),
+                             source_method=source_method if event["kind"] != "stalled" else None,
+                             trigger=trigger if event["kind"] != "stalled" else "timer"))
         return out
 
-    def set_snapshot(self, status: dict, now: float) -> tuple[dict, list[Alert]]:
+    def set_snapshot(self, status: dict, now: float, *, source_method=None, trigger="snapshot") -> tuple[dict, list[Alert]]:
         """A subscription reply is a full snapshot; reconcile with persisted state."""
         self.status = {key: dict(value) for key, value in status.items() if isinstance(value, dict)}
         self.has_snapshot = True
-        return self.evaluate(now)
+        return self.evaluate(now, source_method=source_method, trigger=trigger)
 
-    def apply_update(self, update: dict, now: float) -> tuple[dict, list[Alert]]:
+    def apply_update(self, update: dict, now: float, *, source_method=None, trigger="state_update") -> tuple[dict, list[Alert]]:
         """Changes are deltas, not complete objects. Merge fields in-place."""
         if not self.has_snapshot:
             return self.previous or {}, []
         for key, delta in update.items():
             if isinstance(delta, dict):
                 self.status.setdefault(key, {}).update(delta)
-        return self.evaluate(now)
+        return self.evaluate(now, source_method=source_method, trigger=trigger)
 
-    def evaluate(self, now: float) -> tuple[dict, list[Alert]]:
+    def evaluate(self, now: float, *, source_method=None, trigger="timer") -> tuple[dict, list[Alert]]:
         sample = sample_from_status(self.status)
         old_generation = self.previous.get("generation", 0) if self.previous else 0
         current, events = compare(self.previous, sample, now, self.stall_minutes)
@@ -78,7 +83,7 @@ class EventProcessor:
         if current["generation"] > old_generation:
             self.recent_errors.clear()
         self.previous = current
-        return current, self._alerts(events, sample)
+        return current, self._alerts(events, sample, source_method, trigger)
 
     def ingest_gcode_response(self, message: Any) -> None:
         if not isinstance(message, str):
@@ -98,5 +103,5 @@ class EventProcessor:
         if method == "notify_gcode_response" and params:
             self.ingest_gcode_response(params[0])
         if method == "notify_status_update" and params and isinstance(params[0], dict):
-            return self.apply_update(params[0], now)
+            return self.apply_update(params[0], now, source_method=method)
         return None, []

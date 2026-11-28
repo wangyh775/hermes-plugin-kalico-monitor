@@ -97,7 +97,7 @@ class RuleEngine:
                                 f"{rule.threshold:g}; 当前值 {value:g}；"
                                 f"持续 {rule.duration:g} s"),
                         severity=rule.severity, source_id=f"{rule.name}:{seq}",
-                        payload=payload,
+                        payload=payload, trigger="threshold",
                     )
                     self.tracker[rule.name] = state
                     self.store.report_checkpoint(META_KEY, self.tracker, alert)

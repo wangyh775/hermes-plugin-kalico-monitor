@@ -22,6 +22,7 @@ MESSAGE_FIELDS = {
     "layer", "total_layers", "force_g", "e_speed_mm_s",
     "diagnostic_speed_mm_s", "result", "reason", "step_mm", "total_mm",
     "window_summary", "object", "field", "value", "threshold",
+    "source_type", "source", "source_method", "source_object", "trigger",
 }
 DEFAULT_MESSAGE_FIELDS = (
     "printer", "kind", "severity", "occurred_at", "filename", "detail", "alert_id",
@@ -87,8 +88,8 @@ def load_extensions(path: Path) -> tuple[dict[str, tuple[str, ...]], tuple[Event
             name = section[6:]
             if not NAME.fullmatch(name) or name == "default":
                 raise ValueError(f"自定义事件名称无效：{section}")
-            from .monitor_cfg import LIFECYCLE_EVENTS
-            if name in LIFECYCLE_EVENTS:
+            from .event_registry import REGISTRY
+            if name in REGISTRY:
                 raise ValueError(f"自定义事件不得覆盖内置事件：{name}")
             options = dict(parser.items(section))
             required = {"source", "object", "field", "condition", "threshold"}
