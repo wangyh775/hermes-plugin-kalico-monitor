@@ -2,6 +2,7 @@
 import pytest
 
 from kalico_monitor import bootstrap, setup
+from kalico_monitor.diagnostics import count_inherited_feishu_targets
 from kalico_monitor.events import Alert
 from kalico_monitor.monitor_cfg import read_cfg, save_cfg
 from kalico_monitor.policy import parse_modes, routes_for
@@ -159,3 +160,22 @@ def test_apply_explicit_empty_chat_target_clears_old_route(tmp_path, monkeypatch
     saved = read_env(env)
     assert saved["KALICO_DIRECT_CHAT_ID"] == ""
     assert saved["KALICO_AGENT_CHAT_ID"] == ""
+
+
+def test_feishu_target_drift_is_detected_before_claiming_success():
+    values = defaults()
+    values["KALICO_DIRECT_CHAT_ID"] = "oc_direct"
+    values["KALICO_AGENT_CHAT_ID"] = "oc_agent"
+    config = {"platforms": {"webhook": {"extra": {"routes": {
+        "kalico-alert": {"deliver_extra": {"chat_id": "oc_direct"}},
+        "kalico-analysis": {"deliver_extra": {"chat_id": "oc_old"}},
+    }}}}}
+    with pytest.raises(ValueError, match="目标群"):
+        count_inherited_feishu_targets(values, config)
+    config["platforms"]["webhook"]["extra"]["routes"][
+        "kalico-analysis"]["deliver_extra"]["chat_id"] = "oc_agent"
+    assert count_inherited_feishu_targets(values, config) == 0
+    values["KALICO_AGENT_CHAT_ID"] = ""
+    config["platforms"]["webhook"]["extra"]["routes"][
+        "kalico-analysis"].pop("deliver_extra")
+    assert count_inherited_feishu_targets(values, config) == 1
