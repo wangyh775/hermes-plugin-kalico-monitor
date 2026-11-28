@@ -18,6 +18,7 @@ DESCRIPTIONS = {
     "klippy_recovered": "Klippy 恢复", "moonraker_unreachable": "Moonraker 断开",
     "moonraker_recovered": "Moonraker 恢复", "nozzle_force_anomaly": "喷嘴力异常",
     **{"filament_" + name: value[0] for name, value in FILAMENT_EVENTS.items()},
+    "filament_event_gap": "受力事件流缺失",
 }
 
 

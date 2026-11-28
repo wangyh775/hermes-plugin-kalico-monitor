@@ -99,6 +99,33 @@ class Outbox:
             self._insert(alert)
             return self.conn.total_changes > before
 
+    def ingest_filament_event(self, alert: Alert, boot: str, seq: int) -> bool:
+        """Atomically record event, possible gap, and per-boot high-water mark.
+
+        First sight of a boot establishes the observation boundary. Older
+        replay can fill a previously reported gap, but never rolls back the cursor.
+        """
+        key = f"filament_cursor:{self.printer}:{boot}"
+        with self.conn:
+            previous = self.get_meta(key)
+            if type(previous) is int and seq > previous + 1:
+                first, last = previous + 1, seq - 1
+                self._insert(Alert(
+                    kind="filament_event_gap", generation=alert.generation,
+                    filename=alert.filename, severity="warning",
+                    detail=f"受力事件流不连续：可能缺失 {first}–{last}（启动 {boot}）；请检查打印机状态",
+                    source_id=f"{boot}:{first}-{last}",
+                    payload={"boot_id": boot, "missing_from_seq": first,
+                             "missing_to_seq": last, "observed_seq": seq,
+                             "missing_count": last - first + 1},
+                ))
+            before = self.conn.total_changes
+            self._insert(alert)
+            inserted = self.conn.total_changes > before
+            if type(previous) is not int or seq > previous:
+                self._set_meta(key, seq)
+            return inserted
+
     def enqueue(self, alert: Alert) -> str:
         with self.conn:
             return self._insert(alert)

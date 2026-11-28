@@ -52,3 +52,44 @@ def test_malformed_events_and_subscription(tmp_path):
     assert subscribe_request(True)["params"]["objects"]["filament_force"] == ["events"]
     assert "filament_force" not in subscribe_request(False)["params"]["objects"]
     assert "nozzle_force_monitor" not in subscribe_request(True, filament_only=True)["params"]["objects"]
+
+
+def test_cursor_detects_gap_after_restart_and_replay_is_idempotent(tmp_path):
+    path = tmp_path / "alerts.db"
+    state = {"generation": 2, "filename": "test.gcode"}
+    def snapshot(*events):
+        return {"filament_force": {"events": list(events)}}
+    store = Outbox(path, "printer")
+    assert FilamentEventTracker(store).observe(snapshot(event(20)), state) == 1
+    assert not [r for r in store.pending() if r["kind"] == "filament_event_gap"]
+    store.close()
+    store = Outbox(path, "printer")
+    try:
+        tracker = FilamentEventTracker(store)
+        assert tracker.observe(snapshot(event(23), event(24)), state) == 2
+        assert tracker.observe(snapshot(event(23), event(24)), state) == 0
+        gaps = [r for r in store.pending() if r["kind"] == "filament_event_gap"]
+        assert len(gaps) == 1
+        assert json.loads(gaps[0]["payload"])["missing_count"] == 2
+        assert tracker.observe(snapshot(event(21), event(22)), state) == 2
+        assert store.get_meta("filament_cursor:printer:" + "a" * 32) == 24
+        assert tracker.observe(snapshot(event(1, "b" * 32)), state) == 1
+        assert len([r for r in store.pending() if r["kind"] == "filament_event_gap"]) == 1
+    finally:
+        store.close()
+
+
+def test_gap_within_snapshot_and_sensor_fault(tmp_path):
+    store = Outbox(tmp_path / "db", "printer")
+    try:
+        sensor = event(3)
+        sensor["kind"] = "sensor_fault"
+        sensor["source"] = "watchdog"
+        sensor["reason"] = "load cell stream stale"
+        tracker = FilamentEventTracker(store)
+        assert tracker.observe({"filament_force": {"events": [sensor, event(1)]}}, {}) == 2
+        assert {r["kind"] for r in store.pending()} == {
+            "filament_jam_detected", "filament_sensor_fault", "filament_event_gap"}
+        assert next(r for r in store.pending() if r["kind"] == "filament_sensor_fault")["severity"] == "critical"
+    finally:
+        store.close()

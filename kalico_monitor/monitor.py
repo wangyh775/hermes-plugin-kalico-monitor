@@ -118,6 +118,8 @@ class Monitor:
         try:
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
+                if task.cancelled():
+                    raise RuntimeError("Monitor worker cancelled unexpectedly")
                 task.result()
             raise RuntimeError("Monitor worker exited unexpectedly")
         finally:
