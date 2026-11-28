@@ -5,9 +5,9 @@ import argparse
 import json
 import urllib.request
 
-from .setup import default_path, read_env
-from .policy import parse_modes
 from .monitor_cfg import LIFECYCLE_EVENTS
+from .policy import parse_modes
+from .setup import default_path, read_env
 
 DESCRIPTIONS = {
     "started": "开始打印", "paused": "暂停打印", "resumed": "恢复打印",
@@ -33,7 +33,9 @@ def main(argv: list[str]) -> None:
         import asyncio
         import time
         import uuid
+
         import aiohttp
+
         from .notifier import deliver
         from .policy import routes_for
         from .setup import validate_all
@@ -58,7 +60,9 @@ def main(argv: list[str]) -> None:
         if args.command != "events":
             parser.error("--watch is only valid with events")
         import asyncio
+
         import aiohttp
+
         from .monitor import subscribe_request
         async def watch():
             url = values["MOONRAKER_URL"].rstrip("/").replace("https://", "wss://", 1).replace("http://", "ws://", 1) + "/websocket"
