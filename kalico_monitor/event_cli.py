@@ -23,6 +23,7 @@ def main(argv: list[str]) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=("events", "discover", "test"))
     parser.add_argument("kind", nargs="?")
+    parser.add_argument("--watch", action="store_true", help="observe Moonraker notifications")
     parser.add_argument("--file", type=type(default_path()), default=default_path())
     args = parser.parse_args(argv)
     values = read_env(args.file.expanduser())
@@ -52,6 +53,28 @@ def main(argv: list[str]) -> None:
                     result = await deliver(session, url, values["HERMES_WEBHOOK_SECRET"], values["KALICO_PRINTER_NAME"], alert, route)
                     print(route, result.get("status"))
         asyncio.run(send())
+        return
+    if args.watch:
+        if args.command != "events":
+            parser.error("--watch is only valid with events")
+        import asyncio
+        import aiohttp
+        from .monitor import subscribe_request
+        async def watch():
+            url = values["MOONRAKER_URL"].rstrip("/").replace("https://", "wss://", 1).replace("http://", "ws://", 1) + "/websocket"
+            key = values["MOONRAKER_API_KEY"]
+            async with aiohttp.ClientSession(trust_env=False) as session:
+                async with session.ws_connect(url, headers={"X-Api-Key": key} if key else {}, heartbeat=20) as ws:
+                    await ws.send_json(subscribe_request(False))
+                    async for message in ws:
+                        if message.type == aiohttp.WSMsgType.TEXT:
+                            packet = json.loads(message.data)
+                            if isinstance(packet, dict) and ("method" in packet or "error" in packet):
+                                print(json.dumps(packet, ensure_ascii=False), flush=True)
+        try:
+            asyncio.run(watch())
+        except KeyboardInterrupt:
+            pass
         return
     if args.command == "events":
         modes = parse_modes(values["KALICO_EVENT_MODES"])
