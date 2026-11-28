@@ -261,9 +261,20 @@ class Monitor:
             force_variant = 0
             await ws.send_json(subscribe_request(include_force))
             requested_at = time.monotonic()
+            subscription_pending = True
+            query_pending: float | None = None
+            last_query = requested_at
             while True:
-                if not processor.has_snapshot and time.monotonic() - requested_at > 20:
+                now = time.monotonic()
+                if subscription_pending and now - requested_at > 20:
                     raise TimeoutError("Moonraker subscription reply timed out")
+                if query_pending is not None and now - query_pending > 10:
+                    raise TimeoutError("Moonraker status refresh timed out")
+                if not subscription_pending and query_pending is None and now - last_query >= 30:
+                    request = subscribe_request(include_force,
+                        filament_only=force_variant == 1, legacy_only=force_variant == 2)
+                    await ws.send_json({**request, "method": "printer.objects.query", "id": 3})
+                    query_pending = last_query = now
                 try:
                     msg = await ws.receive(timeout=5)
                 except asyncio.TimeoutError:
@@ -300,6 +311,23 @@ class Monitor:
                     if not isinstance(snapshot, dict):
                         raise RuntimeError("Moonraker subscription returned no status")
                     await self._db_call(self._process_snapshot, processor, snapshot)
+                    subscription_pending = False
+                    query_pending = None
+                    last_query = time.monotonic()
+                    continue
+                if reply_id == 3 and query_pending is not None:
+                    result = packet.get("result")
+                    snapshot = result.get("status") if isinstance(result, dict) else None
+                    if (not isinstance(snapshot, dict)
+                            or not isinstance(snapshot.get("print_stats"), dict)
+                            or not isinstance(snapshot.get("webhooks"), dict)):
+                        raise ConnectionError("Moonraker status refresh invalid")
+                    query_pending = None
+                    # Merge, do not reset job identity as on a new subscription.
+                    current, alerts = processor.apply_update(snapshot, time.time())
+                    self.last_status_received_at = time.monotonic()
+                    await self._db_call(self._record, processor, current, alerts)
+                    await self._db_call(self._tick, processor)
                     continue
                 if reply_id == 2:
                     # A Klippy failure may reject object queries while Moonraker
@@ -342,6 +370,8 @@ class Monitor:
                     include_force = self.settings.watch_nozzle_force
                     force_variant = 0
                     requested_at = time.monotonic()
+                    subscription_pending = True
+                    query_pending = None
                     await ws.send_json(subscribe_request(include_force))
                 else:
                     current, alerts = processor.handle_packet(packet, time.time())
@@ -446,7 +476,7 @@ def main():
         from .setup import main as config_main
         config_main(sys.argv[2:])
         return
-    if len(sys.argv) > 1 and sys.argv[1] in {"events", "discover", "test"}:
+    if len(sys.argv) > 1 and sys.argv[1] in {"events", "discover", "test", "dead-letters"}:
         from .event_cli import main as event_main
         event_main(sys.argv[1:])
         return
