@@ -6,6 +6,27 @@
 
 **Status:** Experimental. The plugin manifest currently says v0.3.0 while Python packaging still says 0.2.0; no real printer-to-Hermes-to-Feishu end-to-end validation has been completed. This is not a safety system.
 
+
+## PR #19: CFG and event management (development preview)
+
+The draft branch introduces a standalone `monitor.cfg` alongside `monitor.env`. It is not Klipper's printer.cfg. Explicit CFG business settings override legacy ENV values; the installer still mirrors some fields for compatibility. API keys and webhook secrets remain in ENV. See the [CFG reference and example](docs/CONFIGURATION.zh-CN.md#pr-19cfg-配置与事件管理开发预览).
+
+The installer adds menu 14 (per-event routing), 15 (direct Feishu chat ID), and 16 (Agent Feishu chat ID). Routes support off/direct/agent/both. Existing assigned deliveries are retained. Inbound chat authorization is separate from outbound targets.
+
+```bash
+.venv/bin/kalico-monitor config --check
+.venv/bin/kalico-monitor config --apply
+.venv/bin/kalico-monitor events
+.venv/bin/kalico-monitor events --watch
+.venv/bin/kalico-monitor discover
+.venv/bin/kalico-monitor test paused
+```
+
+Apply requests confirmation, synchronizes Hermes routes and restarts the service. Watch observes raw Moonraker notifications; discover lists status objects, not arbitrary Kalico internal events. Test sends a real, explicitly synthetic notification according to policy, potentially invoking an LLM, without changing printer state or the production queue. Agent acceptance is not final delivery.
+
+These features are draft-only, pending CI, rollback and live integration validation. Do not deploy the draft to a production printer.
+
+
 ## Architecture
 
 ```text

@@ -43,6 +43,8 @@ def shared_config(path: str | Path | None = None) -> dict[str, str]:
         if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
             value = value[1:-1]
         result[key.strip()] = value
+    from .monitor_cfg import cfg_path, read_cfg
+    result.update({k: v for k, v in read_cfg(cfg_path(filename)).items() if k in CONFIG_KEYS})
     return result
 
 

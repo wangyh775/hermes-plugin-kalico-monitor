@@ -104,6 +104,8 @@ class Monitor:
                 # Persist both tasks even when the analysis endpoint is absent.
                 # The direct alert must never depend on Agent configuration.
                 self.store.ensure_routes(item["id"], routes)
+                if not routes:
+                    LOG.info("notification suppressed: kind=%s id=%s", item["kind"], item["id"])
             for item in self.store.pending_routes(limit=12):
                 route = item["route"]
                 url = self.settings.hermes_agent_url if route == "agent" else self.settings.hermes_url
@@ -329,6 +331,10 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == "config":
         from .setup import main as config_main
         config_main(sys.argv[2:])
+        return
+    if len(sys.argv) > 1 and sys.argv[1] in {"events", "discover", "test"}:
+        from .event_cli import main as event_main
+        event_main(sys.argv[1:])
         return
     parser = argparse.ArgumentParser(description="Monitor Kalico through Moonraker; notify via Hermes")
     parser.add_argument("--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING"))

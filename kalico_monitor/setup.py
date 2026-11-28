@@ -23,6 +23,7 @@ KEYS = (
     "KALICO_STALL_MINUTES", "KALICO_PROGRESS_REPORT_MINUTES",
     "KALICO_WATCH_NOZZLE_FORCE", "HERMES_AGENT_WEBHOOK_URL", "KALICO_EVENT_MODES",
     "KALICO_STATUS_FIELDS", "KALICO_CHAMBER_OBJECT",
+    "KALICO_DIRECT_CHAT_ID", "KALICO_AGENT_CHAT_ID",
 )
 SECRET_KEYS = frozenset({"MOONRAKER_API_KEY", "HERMES_WEBHOOK_SECRET"})
 PLACEHOLDERS = frozenset({"GENERATE_A_LONG_RANDOM_SECRET", "INSECURE_NO_AUTH"})
@@ -32,9 +33,11 @@ GROUPS = {
     "3": ("数据库与会话授权", KEYS[5:7]),
     "4": ("监控与通知", KEYS[7:11]),
     "8": ("LLM 分析与事件策略", KEYS[11:13]),
-    "9": ("状态命令显示字段", KEYS[13:]),
+    "9": ("状态命令显示字段", KEYS[13:15]),
 }
 LABELS = {
+    "KALICO_DIRECT_CHAT_ID": "直推飞书会话 ID",
+    "KALICO_AGENT_CHAT_ID": "分析飞书会话 ID",
     "KALICO_PRINTER_NAME": "打印机名称",
     "MOONRAKER_URL": "Moonraker 地址",
     "MOONRAKER_API_KEY": "Moonraker API Key（可选）",
@@ -63,6 +66,8 @@ def default_path() -> Path:
 
 def defaults() -> dict[str, str]:
     return {
+        "KALICO_DIRECT_CHAT_ID": "",
+        "KALICO_AGENT_CHAT_ID": "",
         "KALICO_PRINTER_NAME": "PEEK-01",
         "MOONRAKER_URL": "http://127.0.0.1:7125",
         "MOONRAKER_API_KEY": "",
@@ -85,6 +90,8 @@ def read_env(path: Path) -> dict[str, str]:
     """Read env as data, never execute it."""
     values = defaults()
     if not path.is_file():
+        from .monitor_cfg import cfg_path, read_cfg
+        values.update(read_cfg(cfg_path(path)))
         return values
     for line in path.read_text(encoding="utf-8").splitlines():
         match = re.match(r"^\s*([A-Z][A-Z0-9_]*)\s*=(.*)$", line)
@@ -93,6 +100,8 @@ def read_env(path: Path) -> dict[str, str]:
             if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
                 value = value[1:-1]
             values[match.group(1)] = value
+    from .monitor_cfg import cfg_path, read_cfg
+    values.update(read_cfg(cfg_path(path)))
     return values
 
 
@@ -145,6 +154,9 @@ def validate_field(key: str, value: str) -> str:
         if not path.is_absolute():
             raise ValueError("数据库路径必须为绝对路径")
         value = str(path)
+    elif key in {"KALICO_DIRECT_CHAT_ID", "KALICO_AGENT_CHAT_ID"}:
+        if value and not re.fullmatch(r"oc_[A-Za-z0-9_-]+", value):
+            raise ValueError("飞书会话 ID 必须为 oc_ 开头")
     elif key == "KALICO_ALLOWED_CHAT_IDS":
         ids = [x.strip() for x in value.split(",") if x.strip()]
         if any(not CHAT_ID.fullmatch(x) for x in ids):
@@ -241,6 +253,9 @@ def test_moonraker(values: dict[str, str], out=print, timeout: int = 4) -> bool:
 
 
 def prompt_value(key: str, current: str, ask, secret_ask, out) -> tuple[str, bool]:
+    if key == "KALICO_EVENT_MODES":
+        from .monitor_cfg import edit_events
+        return edit_events(current, ask, out), False
     if key in SECRET_KEYS:
         out(f"{LABELS[key]}: {masked(key, current)}")
         while True:
@@ -313,7 +328,9 @@ def wizard(path: Path, ask=input, secret_ask=getpass.getpass, out=print) -> bool
             if any(mode == "agent" or mode == "both" for kind, mode in parse_modes(values["KALICO_EVENT_MODES"]).items()) and not values["HERMES_AGENT_WEBHOOK_URL"]:
                 out("启用 agent/both 时必须配置 Hermes Agent Webhook 地址。")
                 continue
+            from .monitor_cfg import cfg_path, save_cfg
             save_env(path, values)
+            save_cfg(cfg_path(path), values)
             out(f"已保存：{path}（权限 0600）")
             if generated_secret and values["HERMES_WEBHOOK_SECRET"] == generated_secret:
                 out("请将以下新 Secret 同步到 Hermes Webhook 路由（仅显示本次）：")
@@ -334,10 +351,33 @@ def wizard(path: Path, ask=input, secret_ask=getpass.getpass, out=print) -> bool
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Kalico Monitor 本地交互配置")
     parser.add_argument("--file", type=Path, default=default_path())
+    parser.add_argument("--apply", action="store_true", help="同步 Hermes 并重启 Monitor")
+    parser.add_argument("--check", action="store_true", help="校验有效配置")
     parser.add_argument("--show", action="store_true", help="仅显示脱敏摘要")
     parser.add_argument("--test", action="store_true", help="仅测试 Moonraker HTTP")
     args = parser.parse_args(argv)
     path = args.file.expanduser()
+    if args.apply:
+        if not sys.stdin.isatty():
+            parser.error("--apply requires interactive confirmation")
+        values = validate_all(read_env(path))
+        if input("同步 Hermes 路由并重启服务？[y/N]：").strip().lower() not in {"y", "yes"}:
+            return
+        from .bootstrap import configure
+        home = Path(os.getenv("HERMES_HOME", "~/.hermes")).expanduser()
+        warnings: list[str] = []
+        configure(Path(__file__).resolve().parents[1], home, values["MOONRAKER_URL"],
+                  values["KALICO_PRINTER_NAME"], "direct", "", path.resolve(), home / "config.yaml",
+                  overrides=values, install_plugin=False, verification_warnings=warnings)
+        for warning in warnings:
+            print(warning)
+        raise SystemExit(2 if warnings else 0)
+    if args.check:
+        values = validate_all(read_env(path))
+        if any(v in {"agent", "both"} for v in parse_modes(values["KALICO_EVENT_MODES"]).values()) and not values["HERMES_AGENT_WEBHOOK_URL"]:
+            parser.error("agent/both requires Hermes Agent Webhook")
+        print("配置校验通过")
+        return
     if args.show:
         show(read_env(path))
         return

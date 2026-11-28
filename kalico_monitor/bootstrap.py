@@ -228,7 +228,7 @@ def restore(path: Path, original: bytes | None) -> None:
 def service_text(root: Path, env_file: Path) -> str:
     return (f"[Unit]\nDescription=Kalico Monitor\nWants=network-online.target\n"
             f"After=network-online.target\n\n[Service]\nType=simple\n"
-            f"EnvironmentFile={env_file}\nWorkingDirectory={root}\n"
+            f"EnvironmentFile={env_file}\nEnvironment=KALICO_MONITOR_ENV_FILE={env_file}\nWorkingDirectory={root}\n"
             f"ExecStart={root / '.venv/bin/python'} -m kalico_monitor.monitor\n"
             f"Restart=always\nRestartSec=5\nNoNewPrivileges=true\n"
             f"PrivateTmp=true\n\n[Install]\nWantedBy=default.target\n")
@@ -374,6 +374,12 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
     # Hermes uses the platform home channel when deliver_extra.chat_id is absent.
     # This supports an already configured Feishu bot without an extra prompt.
     config, port = plan_routes(config, raw, chat, replace_chat=bool(chat_id))
+    for route_name, key in (("kalico-alert", "KALICO_DIRECT_CHAT_ID"), ("kalico-analysis", "KALICO_AGENT_CHAT_ID")):
+        target = validate_field(key, chat_id or previous.get(key, ""))
+        route = config["platforms"]["webhook"]["extra"]["routes"][route_name]
+        if target:
+            route.setdefault("deliver_extra", {})["chat_id"] = target
+        previous[key] = str(route.get("deliver_extra", {}).get("chat_id", ""))
     after_stream = io.StringIO()
     yaml_editor().dump(config, after_stream)
     hermes_changed = before_hermes != after_stream.getvalue()
@@ -393,7 +399,9 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
     unit_changed = manage_service and (
         not unit.is_file() or unit.read_text(encoding="utf-8") != target_unit
     )
-    targets = ([config_path] if hermes_changed else []) + [env_path] + (
+    from .monitor_cfg import cfg_path, save_cfg
+    monitor_cfg = cfg_path(env_path)
+    targets = ([config_path] if hermes_changed else []) + [env_path, monitor_cfg] + (
         [unit] if unit_changed else [])
     for target in targets:
         if target.is_symlink():
@@ -424,6 +432,8 @@ def configure(root: Path, hermes_home: Path, moonraker_url: str, printer: str,
             touched.append(config_path)
         save_env(env_path, previous)
         touched.append(env_path)
+        save_cfg(monitor_cfg, previous)
+        touched.append(monitor_cfg)
         if unit_changed:
             fd, temp = tempfile.mkstemp(prefix=".kalico-service-", dir=unit.parent)
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
@@ -540,8 +550,9 @@ def reconfigure_menu(values: dict[str, str], ask=input, out=print,
         for index, key in enumerate(EDITABLE[:9], 1):
             out(f"[{index}] {LABELS[key]}: {masked(key, pending.get(key, ''))}")
         out("[10] 关键故障策略（direct / agent / both）")
-        out("[12] /kalico status 选择显示字段")
+        out("[12] /kalico status 选择显示字段  [14] 逐事件通知策略")
         out(f"[13] 腔体温度对象：{masked('KALICO_CHAMBER_OBJECT', pending.get('KALICO_CHAMBER_OBJECT', ''))}")
+        out("[15] 直推飞书会话 ID  [16] 分析飞书会话 ID")
         out("[11] 确认并保存   [0] 取消")
         choice = ask("请选择：").strip()
         if choice == "0":
@@ -558,6 +569,19 @@ def reconfigure_menu(values: dict[str, str], ask=input, out=print,
                         "KALICO_CHAMBER_OBJECT", "" if raw == "-" else raw)
                 except ValueError as exc:
                     out(f"输入无效：{exc}")
+            continue
+        if choice in {"15", "16"}:
+            key = "KALICO_DIRECT_CHAT_ID" if choice == "15" else "KALICO_AGENT_CHAT_ID"
+            raw = ask(f"{LABELS[key]} [{pending.get(key, '')}]（回车保留）：").strip()
+            if raw:
+                try:
+                    pending[key] = validate_field(key, raw)
+                except ValueError as exc:
+                    out(str(exc))
+            continue
+        if choice == "14":
+            from .monitor_cfg import edit_events
+            pending["KALICO_EVENT_MODES"] = edit_events(pending["KALICO_EVENT_MODES"], ask, out)
             continue
         if choice == "10":
             mode = ask("关键故障模式 [direct/agent/both]：").strip()
