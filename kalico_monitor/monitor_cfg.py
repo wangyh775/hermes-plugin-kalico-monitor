@@ -126,8 +126,7 @@ def render_cfg(values: dict[str, str]) -> str:
 
 def save_cfg(path: Path, values: dict[str, str]) -> None:
     """Atomic 0600 replacement, failing closed on symlinks or invalid values."""
-    from .custom_config import preserved_extension_text
-    from .custom_config import load_extensions
+    from .custom_config import load_extensions, preserved_extension_text
     from .policy import validate_modes
 
     _, rules = load_extensions(path)

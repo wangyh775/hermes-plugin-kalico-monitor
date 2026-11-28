@@ -86,6 +86,8 @@ async def test_shutdown_webhooks_query_preserves_print_context(tmp_path):
 
 @pytest.mark.asyncio
 async def test_rejected_query_does_not_drop_moonraker_socket(tmp_path):
+    stale_sent = asyncio.Event()
+    allow_recovery = asyncio.Event()
     finished = asyncio.Event()
 
     async def handler(request):
@@ -100,6 +102,14 @@ async def test_rejected_query_does_not_drop_moonraker_socket(tmp_path):
         await ws.send_json({"method": "notify_status_update", "params": [
             {"print_stats": {"state": "complete"}}, 123.0,
         ]})
+        stale_sent.set()
+        await allow_recovery.wait()
+        await ws.send_json({"method": "notify_klippy_ready", "params": []})
+        subscribe = await ws.receive_json()
+        assert subscribe["method"] == "printer.objects.subscribe"
+        state = snapshot()
+        state["print_stats"]["state"] = "complete"
+        await ws.send_json({"id": subscribe["id"], "result": {"status": state}})
         finished.set()
         await asyncio.sleep(0.15)
         await ws.close()
@@ -118,9 +128,15 @@ async def test_rejected_query_does_not_drop_moonraker_socket(tmp_path):
     try:
         async with aiohttp.ClientSession() as session:
             task = asyncio.create_task(monitor._listen(session))
-            await asyncio.wait_for(finished.wait(), timeout=2)
+            await asyncio.wait_for(stale_sent.wait(), timeout=2)
             await asyncio.sleep(0.05)
             assert not task.done(), "Query rejection must not close the socket"
+            assert db.get_state()["state"] == "printing"
+            assert not monitor.subscription_active
+            allow_recovery.set()
+            await asyncio.wait_for(finished.wait(), timeout=2)
+            await asyncio.sleep(0.05)
+            assert monitor.subscription_active
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
