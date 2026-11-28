@@ -2,6 +2,69 @@
 
 以下参数以当前 `kalico_monitor/config.py`、`quick.py` 和 `deploy/kalico-monitor.env.example` 为准。配置主要通过 `~/.config/kalico-monitor/monitor.env` 注入 systemd 服务；修改后重启生效。**目前没有通用的 `events.yaml` 规则引擎，也不支持在飞书中动态调整任意事件阈值。**
 
+
+## PR #19：CFG 配置与事件管理（开发预览）
+
+> 以下功能仅在 PR #19 开发分支中，尚未完成 CI 和实机验收，不建议直接用于生产打印。
+
+配置目录为 `~/.config/kalico-monitor/`。`monitor.cfg` 是独立 Monitor 服务的配置，不是 Kalico 的 printer.cfg。CFG 中明确设置的业务字段优先于旧 ENV；未设置的字段继续使用 ENV。当前安装器仍会同步部分 ENV 字段以兼容旧版本，尚未完全消除重复存储。API Key、Webhook Secret 保留在 ENV，勿提交到 Git。
+
+```ini
+[printer]
+name: PEEK-01
+moonraker_url: http://192.168.31.10:7125
+
+[monitor]
+disconnect_seconds: 25
+stall_minutes: 5
+progress_report_minutes: 30
+watch_nozzle_force: false
+
+[hermes]
+direct_chat_id: oc_xxxxxxxxx
+agent_chat_id: oc_yyyyyyyyy
+
+[status]
+fields: state,file,progress,nozzle,bed,chamber,elapsed,remaining
+chamber_object: temperature_sensor chamber
+
+[events]
+default: direct
+started: direct
+paused: direct
+resumed: direct
+complete: direct
+cancelled: direct
+error: both
+stalled: both
+print_progress: direct
+klippy_shutdown: both
+klippy_disconnected: direct
+klippy_recovered: direct
+moonraker_unreachable: direct
+moonraker_recovered: direct
+nozzle_force_anomaly: both
+```
+
+事件策略：`off` 不发送新通知；`direct` 零 LLM 直推；`agent` 模型分析；`both` 两路独立投递。已经分配的历史投递任务不会因策略变化而取消。关闭通知不关闭打印状态跟踪。定时报告、停滞及喷嘴力监控仍需各自启用。喷嘴力事件依赖兼容的状态对象，任意自定义 Kalico 内部事件尚不能自动接入。
+
+```bash
+.venv/bin/kalico-monitor config --show
+.venv/bin/kalico-monitor config --check
+.venv/bin/kalico-monitor config --apply
+.venv/bin/kalico-monitor events
+.venv/bin/kalico-monitor events --watch
+.venv/bin/kalico-monitor discover
+.venv/bin/kalico-monitor test paused
+```
+
+- `config --apply` 请求确认后同步 Hermes 路由并重启服务；普通 config 向导只保存本地文件。
+- `events` 列出注册事件及策略；`events --watch` 观察原始 Moonraker WebSocket 消息；`discover` 查询状态对象，不是 Kalico 内部事件注册表。
+- `test paused` 按策略实际发送标记为模拟的通知，可能调用 LLM；不修改打印机或生产队列。Agent accepted 仅表示受理。
+- `bash install.sh --reconfigure`：14 逐事件策略，15 直推会话 ID，16 分析会话 ID，11 确认保存。飞书目标同步到 Hermes 的两个 webhook 路由；`KALICO_ALLOWED_CHAT_IDS` 仅限制入站查询权限。
+- 目前仍需验证回滚、旧配置兼容、插件更新及真实飞书投递。手工编辑 CFG 后使用 apply，而不是仅重启服务来同步 Hermes 目标。
+
+
 ## 0. 交互式配置
 
 ~~~bash
