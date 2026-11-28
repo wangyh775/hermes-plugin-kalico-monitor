@@ -4,7 +4,6 @@ import json
 import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
 
 import pytest
 

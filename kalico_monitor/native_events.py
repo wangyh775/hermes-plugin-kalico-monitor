@@ -20,7 +20,7 @@ class NativeEventAdapter:
         self.modes = modes
         self.last = {}
 
-    def observe(self, packet: dict, now: float | None = None) -> bool:
+    def observe(self, packet: dict, now: float | None = None, *, received_at: float | None = None) -> bool:
         method = packet.get("method")
         if not isinstance(method, str) or "id" in packet:
             return False
@@ -54,6 +54,7 @@ class NativeEventAdapter:
             severity=severity,
             source_id=uuid.uuid4().hex, payload={"params": params, "params_summary": summary, **fields},
             source_method=method, trigger="notification",
+            received_at=time.time() if received_at is None else received_at,
         )
         self.store.enqueue(alert)
         self.last[method] = (fingerprint, now)

@@ -145,6 +145,10 @@
         "null"
       ],
       "format": "date-time"
+    },
+    "payload_degraded": {
+      "type": "boolean",
+      "description": "Critical event retained with reduced optional data"
     }
   },
   "additionalProperties": true

@@ -546,9 +546,13 @@ class Monitor:
                 if not isinstance(packet, dict):
                     continue
                 packet_received_at = time.time()
-                self.last_transport_seen = time.monotonic()
                 reply_id = packet.get("id")
-                if packet.get("jsonrpc") == "2.0" or "method" in packet or "result" in packet or "error" in packet:
+                valid_rpc = (isinstance(packet.get("method"), str) or
+                             (type(reply_id) in (int, str) and ("result" in packet or "error" in packet)))
+                if not valid_rpc:
+                    continue
+                self.last_transport_seen = time.monotonic()
+                if valid_rpc:
                     self.probe_pending = None
                     if self.store.get_meta("rpc_health") != "responsive":
                         self.store.set_meta("rpc_health", "responsive")
@@ -626,7 +630,7 @@ class Monitor:
                             self._klippy_disconnected()
                     continue
 
-                self.native_events.observe(packet)
+                self.native_events.observe(packet, received_at=packet_received_at)
                 method = packet.get("method")
                 if method == "notify_klippy_shutdown":
                     self._invalidate_subscription()

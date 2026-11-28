@@ -206,7 +206,7 @@ class Outbox:
                     fallback=False, stable_id=digest)
                 if result.status != "quarantined":
                     return WriteResult(result.id, "degraded")
-                raise ValueError("critical event cannot be persisted")
+                raise ValueError("critical event cannot be persisted") from exc
             return WriteResult(digest, "quarantined")
         incident = (alert.payload or {}).get("incident_key")
         self.conn.execute("""INSERT OR IGNORE INTO alerts
